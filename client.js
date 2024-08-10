@@ -1,4 +1,4 @@
-// h = hide/show menu
+// Spacebar = on/off aim
 
 function SendWSmsg(message) {
     if (window.ws && window.ws.readyState === WebSocket.OPEN) {
@@ -10,17 +10,17 @@ class HackCon {
     constructor() {
         this.showRealAngles = "withAim";
         this.mouseScale = true;
-        this.DrawLines = false;
+        this.DrawLines = true;
         this.linesOpacity = 1;
-        this.ShowHP = false;
-        this.ColorizeTeam = false;
+        this.ShowHP = true;
+        this.ColorizeTeam = true;
         this.TeamColor = "#00FFFF";
         this.EnemyColor = "#FF0000";
         this.showPID = false;
-        this.showLandmines = false;
-        this.showSpikes = false;
-        this.showWires = false;
-        this.drawNamesOnMap = false;
+        this.showLandmines = true;
+        this.showSpikes = true;
+        this.showWires = true;
+        this.drawNamesOnMap = true;
 
         this.changeMyModel = false;
         this.myPlayerModel = 0;
@@ -37,7 +37,8 @@ class HackCon {
         this.mouseFovEnable = true;
         this.resolverType = "linear";
         this.distanceCoefficient = 300;
-        this.bulletSpeedCoefficient = 4;
+        this.bulletSpeedCoefficient = 75;
+        this.weaponOffset = 0;
         this.offsetCoefficient = 0.1;
         this.visualizeResolving = true;
         this.visualizeResolvingColor = "#EEEEEE";
@@ -52,8 +53,13 @@ class HackCon {
     }
 
     static save() {
-        window.localStorage.setItem('hackConConfig', JSON.stringify(MOD));
-        alert("Your configuration has been saved. You can now refresh your window.");
+        navigator.clipboard.writeText(JSON.stringify(MOD));
+        alert("cfg was copied to your clipboard");
+    }
+
+    static load() {
+        MOD = JSON.parse(prompt("paste your cfg here"));
+        alert("cfg was successfully loaded");
     }
 }
 
@@ -61,7 +67,7 @@ class GetAllTargetsCon {
     constructor() {
         this.players = Array.from({ length: 121 }, (_, i) => new GetTarget(i));
         this.ghouls = Array.from({ length: 999 }, (_, i) => new GetTarget(i));
-        this.obstacles = [];
+        this.obstacles = Array.from({ length: 9999 }, (_, i) => new GetObstacle(i));
         this.lines = [
             new LinesCon(0.6, 1, "#EEEEEE"),
             new LinesCon(0.8, 3, "#FF0000"),
@@ -89,8 +95,38 @@ class GetAllTargetsCon {
         return this.ghouls[uID];
     }
 
+    getObstacleByUid(uid) {
+        return this.obstacles[uid];
+    }
+
     resetLines() {
         this.lines.forEach(line => line.reset());
+    }
+
+}
+
+class GetObstacle {
+    constructor(id) {
+        this.id = id;
+        this.x = -1;
+        this.y = -1;
+        this.radius = -1;
+        this.active = false;
+    }
+
+    update(ux, uy, radius) {
+        this.active = true;
+        this.x = ux;
+        this.y = uy;
+        this.radius = radius;
+    }
+
+    setInactive() {
+        this.x = -1;
+        this.y = -1;
+        this.active = false;
+        this.radius = -1;
+        GetAllTargets.resetLines();
     }
 
 }
@@ -100,8 +136,8 @@ class GetTarget {
         this.id = id;
         this.x = -1;
         this.y = -1;
-        this.prevX = Array(3).fill(-1);
-        this.prevY = Array(3).fill(-1);
+        this.prevX = Array(6).fill(-1);
+        this.prevY = Array(6).fill(-1);
         this.active = false;
         this.weapon = -1;
         this.gear = -1;
@@ -129,6 +165,8 @@ class AimbotCon {
     constructor() {
         this.lastAngle = 0;
         this.targetPlayer = null;
+        this.minPrediction = 10;
+        this.maxPredictionMultiplier = 5;
     }
 
     wannaFire(watarget = this.targetPlayer) {
@@ -141,7 +179,7 @@ class AimbotCon {
     resolve() {
         const myPlayer = GetAllTargets.getPlayerById(World.PLAYER.id);
         let target;
-
+    
         if (MOD.lockId > -1) {
             target = GetAllTargets.getPlayerById(MOD.lockId);
         } else {
@@ -149,33 +187,140 @@ class AimbotCon {
                 ? this.findNearestPlayerTo(GetAllTargets.mouseMapCords, MOD.mouseFov)
                 : this.findNearestPlayerTo(myPlayer, 2500);
         }
-
+    
         this.targetPlayer = target;
-
+    
         if (!target) return this.lastAngle;
-
+    
         const distance = Math.hypot(myPlayer.x - target.x, myPlayer.y - target.y);
-        const coefficient = distance / MOD.distanceCoefficient + MOD.offsetCoefficient;
-        const targetX = target.prevX[0] === -1 ? target.x : target.x + coefficient * (target.x - target.prevX[0]);
-        const targetY = target.prevY[0] === -1 ? target.y : target.y + coefficient * (target.y - target.prevY[0]);
-
-        const angle = Math.atan2(targetY - myPlayer.y, targetX - myPlayer.x) * (180 / Math.PI);
-        this.lastAngle = angle;
-
-        if (MOD.visualizeResolving) {
-            GetAllTargets.lines[0].reset(myPlayer.x, myPlayer.y, targetX, targetY);
+        const bulletSpeed = myBulletSpeed ?? 5;
+        const dynamicBulletSpeedCoefficient = this.calculateDynamicBulletSpeedCoefficient(distance);
+        console.log(dynamicBulletSpeedCoefficient)
+        const timeToHit = distance / (bulletSpeed * dynamicBulletSpeedCoefficient);
+        
+        const targetVelocityX = this.calculateVelocity(target.x, target.prevX);
+        const targetVelocityY = this.calculateVelocity(target.y, target.prevY);
+        console.log(targetVelocityX, targetVelocityY)
+    
+        const myVelocityX = this.calculateVelocity(myPlayer.x, myPlayer.prevX);
+        const myVelocityY = this.calculateVelocity(myPlayer.y, myPlayer.prevY);
+    
+        const predictionMultiplier = this.calculatePredictionMultiplier(distance);
+        
+        const targetPrevXEmpty = target.prevX.some(element => element === -1);
+        const targetPrevYEmpty = target.prevY.some(element => element === -1);
+    
+        let predictedX, predictedY;
+    
+        if (targetPrevXEmpty || targetPrevYEmpty) {
+            predictedX = target.x;
+            predictedY = target.y;
+        } else {
+            // Predict position considering obstacles
+            const steps = 10; // Number of steps to check for obstacles
+            for (let i = 1; i <= steps; i++) {
+                const t = (i / steps) * timeToHit * predictionMultiplier;
+                const testX = target.x + (targetVelocityX - myVelocityX) * t;
+                const testY = target.y + (targetVelocityY - myVelocityY) * t;
+                
+                if (this.isPointInObstacle(testX, testY)) {
+                    console.log("obstackle!!")
+                    // If we hit an obstacle, use the previous valid position
+                    predictedX = target.x + (targetVelocityX - myVelocityX) * ((i - 1) / steps) * timeToHit * predictionMultiplier;
+                    predictedY = target.y + (targetVelocityY - myVelocityY) * ((i - 1) / steps) * timeToHit * predictionMultiplier;
+                    break;
+                }
+                
+                if (i === steps) {
+                    // If no obstacles were hit, use the full prediction
+                    predictedX = testX;
+                    predictedY = testY;
+                }
+            }
         }
+    
+        const rawAngle = Math.atan2(predictedY - myPlayer.y, predictedX - myPlayer.x) * (180 / Math.PI);
+    
+        const weaponOffset = weapon.x !== undefined ? weapon.x : MOD.weaponOffset;
+    
+        const dynamicOffset = Math.abs(weaponOffset / 2) / Math.max(1, distance / 100);
+        const adjustedAngle = rawAngle - dynamicOffset;
+    
+        const smoothedAngle = this.smoothAngle(adjustedAngle);
+    
+        this.lastAngle = smoothedAngle;
+    
+        if (MOD.visualizeResolving) {
+            GetAllTargets.lines[0].reset(myPlayer.x, myPlayer.y, predictedX, predictedY);
+        }
+    
+        return Math.round(smoothedAngle);
+    }
+    isPointInObstacle(x, y) {
+        return GetAllTargets.obstacles.some(obstacle => 
+            obstacle.active && 
+            Math.hypot(x - obstacle.x, y - obstacle.y) <= obstacle.radius
+        );
+    }
 
-        return Math.round(angle);
+    calculateDynamicBulletSpeedCoefficient(distance) {
+        const minDistance = 100;  // Minimum distance where coefficient starts changing
+        const maxDistance = 1000; // Maximum distance where coefficient reaches its peak
+        const minCoefficient = 25;  // Minimum coefficient for close targets
+        const maxCoefficient = 80;  // Maximum coefficient for far targets
+    
+        if (distance <= minDistance) return minCoefficient;
+        if (distance >= maxDistance) return maxCoefficient;
+    
+        // Linear interpolation between min and max coefficient based on distance
+        const t = (distance - minDistance) / (maxDistance - minDistance);
+        return minCoefficient + t * (maxCoefficient - minCoefficient);
+    }
+
+
+    calculateVelocity(current, previous) {
+        if (!Array.isArray(previous) || previous.length === 0 || previous[0] === -1) {
+            return 0; // Return 0 if we don't have valid previous data
+        }
+        
+        const validPrevious = previous.filter(pos => pos !== -1);
+        if (validPrevious.length === 0) {
+            return 0; // Return 0 if all previous positions are invalid
+        }
+        
+        // Calculate velocity based on the most recent valid previous position
+        const timeDiff = 16 * validPrevious.length; // Assuming 16ms between updates
+        return (current - validPrevious[0]) / timeDiff;
+    }
+
+    calculatePredictionMultiplier(distance) {
+
+        const minDistance = 100;
+        const maxDistance = 1200;
+        const minMultiplier = 1;
+
+        return minMultiplier + (this.maxPredictionMultiplier - minMultiplier) * 
+               Math.min(Math.max((distance - minDistance) / (maxDistance - minDistance), 0), 1);
+    }
+
+    smoothAngle(newAngle) {
+        const angleDiff = (newAngle - this.lastAngle + 540) % 360 - 180;
+        return this.lastAngle + angleDiff;
     }
 
     findNearestPlayerTo(cords, fov) {
         let closest = null;
         let minDistance = fov;
 
-        const checkEntities = (entities) => {
+        const checkEntities = (entities, isPlayer) => {
             for (let entity of entities) {
-                if (entity.active && entity.id !== World.PLAYER.id && (World.players[entity.id].team !== World.PLAYER.team || World.PLAYER.team === -1)) {
+                if (entity.active && entity.id !== World.PLAYER.id) {
+                    // Check team only for players, not for ghouls
+                    if (isPlayer) {
+                        if (World.players[entity.id].team === World.PLAYER.team && World.PLAYER.team !== -1) {
+                            continue; // Skip teammates
+                        }
+                    }
                     const distance = Math.hypot(cords.x - entity.x, cords.y - entity.y);
                     if (distance < minDistance) {
                         closest = entity;
@@ -186,12 +331,12 @@ class AimbotCon {
         };
 
         if (MOD.target === 'players' || MOD.target === 'all') {
-            checkEntities(GetAllTargets.players);
+            checkEntities(GetAllTargets.players, true);
         }
         if (MOD.target === 'ghouls' || MOD.target === 'all') {
-            checkEntities(GetAllTargets.ghouls);
+            checkEntities(GetAllTargets.ghouls, false);
         }
-
+    
         return closest;
     }
 }
@@ -245,22 +390,18 @@ window.addEventListener("mousemove", event => {
 
 window.addEventListener("keydown", event => {
     if (chatvisible != 0) return;
-    switch (event.keyCode) {
-        case 72:
-            gui.show(gui._hidden);
-            break;
-    }
+        if (event.keyCode === 32) MOD.AimBotEnable = !MOD.AimBotEnable;
+        if (event.keyCode === 66) MOD.autoLoot = !MOD.autoLoot;
 });
 
+// Your main script
 window.onload = () => {
-    const storedConfig = window.localStorage.getItem('hackConConfig');
-    if (storedConfig) {
-      MOD = JSON.parse(storedConfig);
-    }
+    // Create a GUI
+    const gui = new dat.GUI({ name: 'devast.MOD' });
 
-    gui = new lil.GUI({ name: 'devast.MOD' });
-
+    //-----------------------------------
     const visuals = gui.addFolder('Visuals');
+    visuals.open();
     
     const showFolder = visuals.addFolder('Show');
     showFolder.add(MOD, 'showPID');
@@ -290,7 +431,9 @@ window.onload = () => {
     const linesopas = linesFolder.add(MOD, 'linesOpacity', 0, 1, 0.1).domElement;
     linesopas.disabled = true;
 
+    //-------------------------------------
     const automation = gui.addFolder('Automation');
+    automation.open();
 
     const autoLootFolder = automation.addFolder('AutoLoot');
     autoLootFolder.add(MOD, 'autoLoot');
@@ -303,18 +446,23 @@ window.onload = () => {
     const i = autoEatFolder.add(MOD, 'hungryLevel', 0, 255, 10).domElement;
     i.disabled = true;
 
+
+    //------------------------------------------
     const aimbotfolder = gui.addFolder('Aim Bot');
     aimbotfolder.add(MOD, 'AimBotEnable');
     aimbotfolder.add(MOD, 'target', ['players', 'ghouls', 'all']);
     aimbotfolder.add(MOD, 'distanceCoefficient', 10, 1000, 10);
-    aimbotfolder.add(MOD, 'bulletSpeedCoefficient', 1, 15, 0.25);
+    aimbotfolder.add(MOD, 'bulletSpeedCoefficient', 1, 100, 1);
     aimbotfolder.add(MOD, 'offsetCoefficient', 0, 3, 0.1);
-
+    aimbotfolder.add(MOD, 'weaponOffset', 0, 100, 1);
+    
+    //------------------------------------------
     const skinchanger = gui.addFolder('Skin');
     skinchanger.add(MOD, 'changeMyModel');
     const sc = skinchanger.add(MOD, 'myPlayerModel', 0, 14, 1).domElement;
     sc.disabled = true;
 
+    //--------------------------------------
     const tokenchanger = gui.addFolder('Token Changer');
     const btnCopyToken = tokenchanger.add({ Copy: () => {} }, 'Copy');
     btnCopyToken.onChange(() => {
@@ -369,16 +517,18 @@ window.onload = () => {
     
         const controller = lootdata.add(itemData, "acquire").name(itemName);
         controller.onChange(function (value) {
-            controllers[itemName].object.acquire = value;
-            LootData[itemName].acquire = value;
+            controllers[itemName].object.acquire = value; // Update the controller value
+            LootData[itemName].acquire = value; // Update the LootData object
         });
     
         controllers[itemName] = controller;
     }
 
-    var cfg = gui.addFolder("Configuration").open();
+    var cfg = gui.addFolder("CFG");
     cfg.add(HackCon, "save");
+    cfg.add(HackCon, "load");
 
+    
 };
 
     const lootItems = [
@@ -546,6 +696,8 @@ window.onload = () => {
 ];
 
 const LootData = Object.fromEntries(lootItems.map(({ name, acquire, extra }) => [name, { acquire, extra }]));
+
+//---------------------------------------------------------------------------------------------------------------------------------------------//
 
 var lowerCase = window.navigator.userAgent.toLowerCase();
 var isTouchScreen = (((((((lowerCase.indexOf("isTouchScreen") !== -1) || (lowerCase.indexOf("android") !== -1)) || (lowerCase.indexOf("ipad") !== -1)) || (lowerCase.indexOf("iphone") !== -1)) || (lowerCase.indexOf("ipod") !== -1)) || (lowerCase.indexOf("kindle") !== -1)) || (lowerCase.indexOf("silk/") !== -1)) ? 1 : 0;
@@ -1476,12 +1628,14 @@ var GUI = (function() {
 })();
 
 function onUnits(data, ui8) {
+
     var ui16 = new window.Uint16Array(data);
 
+    /* The amount of object that arrived in one context of units data([18] is one object data(-2 from beggining)) */
     var len = (ui8.length - 2) / 18;
 
     if (ui8[1] === 1)
-        Entitie.removeAll();
+        Entitie.removeAll();  // First message contains [0, 1 ...] at the beggining.
     for (
         var i   = 0,
         isRef8  = 2,
@@ -1503,11 +1657,12 @@ function onUnits(data, ui8) {
 
             if (state === 0) { 
                 Entitie.remove(pid, id, uid, type, extra);
-                if (type === 0) GetAllTargets.getPlayerById(pid).setInactive();
-                if (type === 13) GetAllTargets.getGhoulByUid(uid).setInactive();
+                GetAllTargets.getPlayerById(pid).setInactive();
+                GetAllTargets.getGhoulByUid(uid).setInactive();
+                GetAllTargets.getObstacleByUid(uid).setInactive();
                 continue;
             }
-
+            
             entity            = Entitie.get(pid, id, uid, type);
 
             setEntitie(
@@ -1516,17 +1671,43 @@ function onUnits(data, ui8) {
             uid, 
             id, 
             type, 
-            ui16[isRef16 + 4],
-            ui16[isRef16 + 5],
-            ui16[isRef16 + 6],
-            ui16[isRef16 + 7],
-            extra,
-            ui8[isRef8 + 2],
+            ui16[isRef16 + 4], // Position X
+            ui16[isRef16 + 5], // Position Y
+            ui16[isRef16 + 6], // Position X
+            ui16[isRef16 + 7], // Position Y
+            extra,             // Distinguish look of object
+            ui8[isRef8 + 2],   // Rotation
             state
             );
 
             var update = ENTITIES[type].update;
             if (update !== window.undefined) update(entity, ui16[isRef16 + 4], ui16[isRef16 + 5]);
+
+            //   if its other entity   if its not ghoul     if its not loot
+            if ( entity.id != 0 && entity.type != 13 && entity.type != 1 ) {
+
+            var resIndex = (entity.extra >> 5) & 31;
+            var res = RESOURCES[resIndex];
+
+            if (entity.type != 1 || entity.type != 9 || entity.type != 2) {
+                if (res && res.type) {
+                    var typIndex = (entity.extra >> 10) & 7;
+                    var typ = res.type[typIndex];
+                    if (typ) {
+                        GetAllTargets.getObstacleByUid(uid).update(ui16[isRef16 + 6], ui16[isRef16 + 7], typ.radius);
+                    } else {
+                        console.log("typ is undefined or not found in res.type");
+                        // Handle the case where typ is undefined
+                    }
+                } else {
+                    console.log("res or res.type is undefined");
+                    // Handle the case where res or res.type is undefined
+                }
+            }
+
+            //console.log(entity,pid,uid,id,type,ui16[isRef16 + 4],ui16[isRef16 + 5],ui16[isRef16 + 6],ui16[isRef16 + 7],extra,ui8[isRef8 + 2],state)
+
+            }
 
             if (pid !== 0 && type === 0) GetAllTargets.getPlayerById(pid).update(ui16[isRef16 + 6], ui16[isRef16 + 7]);
             if (uid !== 0 && type === 13) GetAllTargets.getGhoulByUid(uid).update(ui16[isRef16 + 6], ui16[isRef16 + 7]);
@@ -1716,7 +1897,9 @@ function onHandshake(data, ui8) {
             World.playerAlive--;
         PLAYER.tokenId = ui16[VmvnN + 3];
         PLAYER.score = MathUtils.inflateNumber(ui16[VmvnN + 4]) + 1;
+        window.console.log("id", PLAYER.id, "score", PLAYER.score);
         PLAYER.scoreSimplified = MathUtils.simplifyNumber(PLAYER.score - 1);
+
         MOD.tokenId = PLAYER.tokenId;
     }
 
@@ -2226,6 +2409,7 @@ function onJoinTeam(PLAYER) {
 };
 
 function onTeamPosition(ui8) {
+    window.console.log(ui8);
     var pos = World.PLAYER.teamPos;
     var len = (ui8.length - 1) / 3;
     var j = 0;
@@ -2328,82 +2512,103 @@ function onDramaticChrono(duration) {
 
 function onMessageRaw(data) {
     var ui8 = new window.Uint8Array(data);
+    // New case numbers array
+    const newCaseNumbers = [42, 0, 35, 31, 27, 1, 32, 22, 34, 19, 28, 17, 15, 4, 30, 29, 23, 12, 33, 37, 54, 3, 56, 38, 14, 48, 64, 52, 46, 6, 11, 61, 10, 71, 41, 5, 59, 73, 58, 16, 60, 53, 20, 49, 40, 8, 62, 67, 25, 26, 2, 36, 18, 44, 9, 21, 7, 13, 24, 57, 69, 68, 55, 51, 39, 45, 65, 72, 70, 43, 47, 50, 66, 63];
+    // Create a map from old case numbers to new case numbers
+    const caseMap = {
+        52: newCaseNumbers[0], 0: newCaseNumbers[1], 34: newCaseNumbers[2], 46: newCaseNumbers[3], 51: newCaseNumbers[4],
+        63: newCaseNumbers[5], 6: newCaseNumbers[6], 65: newCaseNumbers[7], 56: newCaseNumbers[8], 72: newCaseNumbers[9],
+        71: newCaseNumbers[10], 55: newCaseNumbers[11], 17: newCaseNumbers[12], 1: newCaseNumbers[13], 40: newCaseNumbers[14],
+        58: newCaseNumbers[15], 64: newCaseNumbers[16], 30: newCaseNumbers[17], 48: newCaseNumbers[18], 35: newCaseNumbers[19],
+        29: newCaseNumbers[20], 54: newCaseNumbers[21], 9: newCaseNumbers[22], 69: newCaseNumbers[23], 39: newCaseNumbers[24],
+        3: newCaseNumbers[25], 38: newCaseNumbers[26], 21: newCaseNumbers[27], 43: newCaseNumbers[28], 20: newCaseNumbers[29],
+        44: newCaseNumbers[30], 42: newCaseNumbers[31], 12: newCaseNumbers[32], 18: newCaseNumbers[33], 47: newCaseNumbers[34],
+        73: newCaseNumbers[35], 61: newCaseNumbers[36], 25: newCaseNumbers[37], 66: newCaseNumbers[38], 59: newCaseNumbers[39],
+        24: newCaseNumbers[40], 41: newCaseNumbers[41], 19: newCaseNumbers[42], 57: newCaseNumbers[43], 67: newCaseNumbers[44],
+        37: newCaseNumbers[45], 32: newCaseNumbers[46], 22: newCaseNumbers[47], 4: newCaseNumbers[48], 60: newCaseNumbers[49],
+        53: newCaseNumbers[50], 8: newCaseNumbers[51], 13: newCaseNumbers[52], 16: newCaseNumbers[53], 7: newCaseNumbers[54],
+        31: newCaseNumbers[55], 68: newCaseNumbers[56], 50: newCaseNumbers[57], 45: newCaseNumbers[58], 28: newCaseNumbers[59],
+        49: newCaseNumbers[60], 10: newCaseNumbers[61], 62: newCaseNumbers[62], 27: newCaseNumbers[63], 26: newCaseNumbers[64],
+        5: newCaseNumbers[65], 15: newCaseNumbers[66], 23: newCaseNumbers[67], 70: newCaseNumbers[68], 14: newCaseNumbers[69],
+        33: newCaseNumbers[70], 2: newCaseNumbers[71], 36: newCaseNumbers[72], 11: newCaseNumbers[73]
+    };
 
+    // Decode data with updated case numbers
     switch (ui8[0]) {
-        case 42:         onUnits                    (data, ui8);                    break;
-        case 0:          onOldVersion               (data);                         break;
-        case 35:         onFull                     ();                             break;
-        case 31:         onPlayerDie                (ui8);                          break;
-        case 27:         onOtherDie                 (ui8[1]);                       break;
-        case 1:          onFailRestoreSession       ();                             break;
-        case 32:         onStoleYourSession         ();                             break;
-        case 22:         onMute                     (ui8[1]);                       break;
-        case 34:         onLeaderboard              (data, ui8);                    break;
-        case 19:         onHandshake                (data, ui8);                    break;
-        case 28:         onKickInactivity           ();                             break;
-        case 17:         onNotification             (ui8);                          break;
-        case 15:         onGauges                   (ui8);                          break;
-        case 4:          onScore                    (data);                         break;
-        case 30:         onPlayerHit                (ui8[1], ui8[2]);               break;
-        case 29:         onFullInventory            (ui8);                          break;
-        case 23:         onDeleteItem               (ui8);                          break;
-        case 12:         onNewItem                  (ui8);                          break;
-        case 33:         onPlayerLife               (ui8[1]);                       break;
-        case 37:         onLifeDecreas              ();                             break;
-        case 54:         onSelectedItem             (ui8);                          break;
-        case 3:          onLifeStop                 ();                             break;
-        case 56:         onPlayerHeal               (ui8[1]);                       break;
-        case 38:         onStaminaIncrease          ();                             break;
-        case 14:         onStaminaStop              ();                             break;
-        case 48:         onStaminaDecrease          ();                             break;
-        case 64:         onColdIncrease             ();                             break;
-        case 52:         onColdStop                 ();                             break;
-        case 46:         onColdDecrease             ();                             break;
-        case 6:          onPlayerStamina            (ui8[1]);                       break;
-        case 11:         onLifeIncrease             ();                             break;
-        case 61:         onReplaceItem              (ui8);                          break;
-        case 10:         onStackItem                (ui8);                          break;
-        case 71:         onSplitItem                (ui8);                          break;
-        case 41:         onReplaceAmmo              (ui8);                          break;
-        case 5:          onStartInteraction         (ui8[1]);                       break;
-        case 59:         onInterruptInteraction     ();                             break;
-        case 73:         onReplaceItemAndAmmo       (ui8);                          break;
-        case 58:         onBlueprint                (ui8[1]);                       break;
-        case 16:         onDay                      ();                             break;
-        case 60:         onNight                    ();                             break;
-        case 53:         onPlayerXp                 ((ui8[1] << 8) + ui8[2]);       break;
-        case 20:         onPlayerXpSkill            (ui8);                          break;
-        case 49:         onBoughtSkill              (ui8[1]);                       break;
-        case 40:         onStartCraft               (ui8[1]);                       break;
-        case 8:          onLostBuilding             ();                             break;
-        case 62:         onOpenBuilding             (ui8);                          break;
-        case 67:         onNewFuelValue             (ui8);                          break;
-        case 25:         onRadOn                    ();                             break;
-        case 26:         onRadOff                   ();                             break;
-        case 2:          onWarmOn                   ();                             break;
-        case 36:         onWarmOff                  ();                             break;
-        case 18:         onWrongTool                (ui8[1]);                       break;
-        case 44:         onFullChest                (ui8);                          break;
-        case 9:          onAcceptedTeam             (ui8[1], ui8[2]);               break;
-        case 21:         onKickedTeam               (ui8[1]);                       break;
-        case 7:          onDeleteTeam               (ui8[1]);                       break;
-        case 13:         onJoinTeam                 (ui8[1]);                       break;
-        case 24:         onTeamPosition             (ui8);                          break;
-        case 57:         onKarma                    (ui8[1]);                       break;
-        case 69:         onBadKarma                 (ui8);                          break;
-        case 68:         onAreas                    (ui8);                          break;
-        case 55:         onWrongPassword            ();                             break;
-        case 51:         onModdedGaugesValues       (data);                         break;
-        case 39:         onShakeExplosionState      (ui8[1]);                       break;
-        case 45:         onPlayerEat                (ui8[1]);                       break;
-        case 65:         onCitiesLocation           (ui8);                          break;
-        case 72:         onPoisened                 (ui8[1]);                       break;
-        case 70:         onRepellent                (ui8[1], ui8[2]);               break;
-        case 43:         onLapadoine                (ui8[1], ui8[2]);               break;
-        case 47:         onResetDrug                (ui8[1], ui8[2]);               break;
-        case 50:         onDramaticChrono           (ui8[1]);                       break;
-        case 66:         FeederonWarmOn             ();                             break;
-        case 63:         FeederonWarmOff            ();                             break;
+        case newCaseNumbers[0]:          onUnits                    (data, ui8);                    break;
+        case newCaseNumbers[1]:          onOldVersion               (data);                         break;
+        case newCaseNumbers[2]:          onFull                     ();                             break;
+        case newCaseNumbers[3]:          onPlayerDie                (ui8);                          break;
+        case newCaseNumbers[4]:          onOtherDie                 (ui8[1]);                       break;
+        case newCaseNumbers[5]:          onFailRestoreSession       ();                             break;
+        case newCaseNumbers[6]:          onStoleYourSession         ();                             break;
+        case newCaseNumbers[7]:          onMute                     (ui8[1]);                       break;
+        case newCaseNumbers[8]:          onLeaderboard              (data, ui8);                    break;
+        case newCaseNumbers[9]:          onHandshake                (data, ui8);                    break;
+        case newCaseNumbers[10]:         onKickInactivity           ();                             break;
+        case newCaseNumbers[11]:         onNotification             (ui8);                          break;
+        case newCaseNumbers[12]:         onGauges                   (ui8);                          break;
+        case newCaseNumbers[13]:         onScore                    (data);                         break;
+        case newCaseNumbers[14]:         onPlayerHit                (ui8[1], ui8[2]);               break;
+        case newCaseNumbers[15]:         onFullInventory            (ui8);                          break;
+        case newCaseNumbers[16]:         onDeleteItem               (ui8);                          break;
+        case newCaseNumbers[17]:         onNewItem                  (ui8);                          break;
+        case newCaseNumbers[18]:         onPlayerLife               (ui8[1]);                       break;
+        case newCaseNumbers[19]:         onLifeDecreas              ();                             break;
+        case newCaseNumbers[20]:         onSelectedItem             (ui8);                          break;
+        case newCaseNumbers[21]:         onLifeStop                 ();                             break;
+        case newCaseNumbers[22]:         onPlayerHeal               (ui8[1]);                       break;
+        case newCaseNumbers[23]:         onStaminaIncrease          ();                             break;
+        case newCaseNumbers[24]:         onStaminaStop              ();                             break;
+        case newCaseNumbers[25]:         onStaminaDecrease          ();                             break;
+        case newCaseNumbers[26]:         onColdIncrease             ();                             break;
+        case newCaseNumbers[27]:         onColdStop                 ();                             break;
+        case newCaseNumbers[28]:         onColdDecrease             ();                             break;
+        case newCaseNumbers[29]:         onPlayerStamina            (ui8[1]);                       break;
+        case newCaseNumbers[30]:         onLifeIncrease             ();                             break;
+        case newCaseNumbers[31]:         onReplaceItem              (ui8);                          break;
+        case newCaseNumbers[32]:         onStackItem                (ui8);                          break;
+        case newCaseNumbers[33]:         onSplitItem                (ui8);                          break;
+        case newCaseNumbers[34]:         onReplaceAmmo              (ui8);                          break;
+        case newCaseNumbers[35]:         onStartInteraction         (ui8[1]);                       break;
+        case newCaseNumbers[36]:         onInterruptInteraction     ();                             break;
+        case newCaseNumbers[37]:         onReplaceItemAndAmmo       (ui8);                          break;
+        case newCaseNumbers[38]:         onBlueprint                (ui8[1]);                       break;
+        case newCaseNumbers[39]:         onDay                      ();                             break;
+        case newCaseNumbers[40]:         onNight                    ();                             break;
+        case newCaseNumbers[41]:         onPlayerXp                 ((ui8[1] << 8) + ui8[2]);       break;
+        case newCaseNumbers[42]:         onPlayerXpSkill            (ui8);                          break;
+        case newCaseNumbers[43]:         onBoughtSkill              (ui8[1]);                       break;
+        case newCaseNumbers[44]:         onStartCraft               (ui8[1]);                       break;
+        case newCaseNumbers[45]:         onLostBuilding             ();                             break;
+        case newCaseNumbers[46]:         onOpenBuilding             (ui8);                          break;
+        case newCaseNumbers[47]:         onNewFuelValue             (ui8);                          break;
+        case newCaseNumbers[48]:         onRadOn                    ();                             break;
+        case newCaseNumbers[49]:         onRadOff                   ();                             break;
+        case newCaseNumbers[50]:         onWarmOn                   ();                             break;
+        case newCaseNumbers[51]:         onWarmOff                  ();                             break;
+        case newCaseNumbers[52]:         onWrongTool                (ui8[1]);                       break;
+        case newCaseNumbers[53]:         onFullChest                (ui8);                          break;
+        case newCaseNumbers[54]:         onAcceptedTeam             (ui8[1], ui8[2]);               break;
+        case newCaseNumbers[55]:         onKickedTeam               (ui8[1]);                       break;
+        case newCaseNumbers[56]:         onDeleteTeam               (ui8[1]);                       break;
+        case newCaseNumbers[57]:         onJoinTeam                 (ui8[1]);                       break;
+        case newCaseNumbers[58]:         onTeamPosition             (ui8);                          break;
+        case newCaseNumbers[59]:         onKarma                    (ui8[1]);                       break;
+        case newCaseNumbers[60]:         onBadKarma                 (ui8);                          break;
+        case newCaseNumbers[61]:         onAreas                    (ui8);                          break;
+        case newCaseNumbers[62]:         onWrongPassword            ();                             break;
+        case newCaseNumbers[63]:         onModdedGaugesValues       (data);                         break;
+        case newCaseNumbers[64]:         onShakeExplosionState      (ui8[1]);                       break;
+        case newCaseNumbers[65]:         onPlayerEat                (ui8[1]);                       break;
+        case newCaseNumbers[66]:         onCitiesLocation           (ui8);                          break;
+        case newCaseNumbers[67]:         onPoisened                 (ui8[1]);                       break;
+        case newCaseNumbers[68]:         onRepellent                (ui8[1], ui8[2]);               break;
+        case newCaseNumbers[69]:         onLapadoine                (ui8[1], ui8[2]);               break;
+        case newCaseNumbers[70]:         onResetDrug                (ui8[1], ui8[2]);               break;
+        case newCaseNumbers[71]:         onDramaticChrono           (ui8[1]);                       break;
+        case newCaseNumbers[72]:         FeederonWarmOn             ();                             break;
+        case newCaseNumbers[73]:         FeederonWarmOff            ();                             break;
     }
 };
 
@@ -2417,7 +2622,7 @@ function onNewPlayer(data) {
     PLAYER.tokenId          = data[2];
     PLAYER.score            = 0;
     PLAYER.old              = __ENTITIE_PLAYER__;
-    PLAYER.nickname         = data[3];
+    PLAYER.nickname         = ((data[3] + "#") + data[1]);
     PLAYER.skin             = data[4];
     PLAYER.ghoul            = data[5];
     PLAYER.team             = -1;
@@ -2507,9 +2712,13 @@ function onFirstMessage(dat) {
         password = window.document.getElementById("passwordInput").value;
         if (password.length > 0)
             localStorage2.setItem("password", password);
+        if (Loader.getURLData("admin") !== null) {
+            Home.adblocker = 0;
+            Home.ads = -1;
+        }
     }
-
-    return [dat, token, tokenId, userid, state, nickname, skin, 0, password];
+    Home.adblocker = 0 // make sure we do indeed get the items
+    return [dat, token, tokenId, userid, state, nickname, skin, Home.adblocker, password];
 };
 
 var Client = (function() {
@@ -2561,6 +2770,7 @@ var Client = (function() {
     var startMessage = window.undefined;
 
     function init(version, rejoin, joinServerDelay, joinServerAttempts, pingServerDelay, inactivityTimeoutt, RawMessage, JsonMessage, FirstMessage) {
+        //getServList = (wwwWN !== window.undefined) ? wwwWN : "json/servers.json";
         dat = (version !== window.undefined) ? version : 0;
         connectionAttemptsLimit = (rejoin !== window.undefined) ? rejoin : 15000;
         reconnectionAttempts = (joinServerAttempts !== window.undefined) ? joinServerAttempts : 3;
@@ -2701,6 +2911,7 @@ var Client = (function() {
         var shift = Keyboard.isShift();
         if (shift !== lastShiftState) {
             lastActivityTimestamp = previousTimestamp;
+            window.console.log("sendShift", shift);
             lastShiftState = shift;
             socket.send(window.JSON.stringify([7, shift]));
         }
@@ -2844,7 +3055,7 @@ var Client = (function() {
 
     function getServerList(_srv) {
 
-        var lobbyList = 'https://devastio.duckdns.org/list';
+        var lobbyList = 'https://api.eg.rivet.gg/matchmaker/lobbies/list';
     
         let header = {'Accept': 'application/json'};
     
@@ -2911,9 +3122,13 @@ var Client = (function() {
         muted:              muted,
         closeClient:        closeClient,
         sendChatMessage:    sendChatMessage,
-        sendWSmsg:          sendWSmsg,
-        sendAfk:            sendAfk,
-        newToken:           newToken,
+
+        // not official \/
+        sendWSmsg:        sendWSmsg,
+        sendAfk:          sendAfk,
+        newToken:         newToken,
+        // not official /\
+
         sendPacket:         sendPacket,
         sendMove:           sendMove,
         sendMouseAngle:     sendMouseAngle,
@@ -2955,8 +3170,9 @@ var World = (function() {
     };
 
     function player(id, nickname) {
+
         this.id                 = id;
-        this.nickname           = nickname
+        this.nickname           = ((nickname + "#") + id);
         this.tokenId            = 0;
         this.skin               = 0;
         this.ghoul              = 0;
@@ -3164,6 +3380,7 @@ var World = (function() {
     };
 
     function sortLeaderboard() {
+        window.console.log(World.playerNumber);
         for (var i = 0; i < World.playerNumber; i++)
             World.leaderboard[i] = i;
         World.leaderboard = World.leaderboard.sort(VVnvw).slice(0, 10);
@@ -3701,6 +3918,7 @@ var Entitie = (function() {
             var newEntityIndex = Border.forceNewIdentifier(border[type]);
             entity = units[type][newEntityIndex];
             if (entity === window.undefined) {
+                window.console.log("Memory Warn: new entitie created");
                 units[type][newEntityIndex] = Entitie.create(type);
                 entity = units[type][newEntityIndex];
             }
@@ -8159,6 +8377,7 @@ var AudioUtils = (function() {
             sound.run = 0;
             sound.volume0 = -1;
             sound.source.stop();
+            window.console.log("Stop", sound.url);
         }
     };
 
@@ -8168,6 +8387,7 @@ var AudioUtils = (function() {
         sound.fade = 0;
         sound.fadeMax = duration;
         sound.fadeEffect = effect;
+        window.console.log("FADE", sound.url);
     };
 
     function playSound(sound, duration, timestamp) {
@@ -8224,11 +8444,13 @@ var AudioUtils = (function() {
         sound.source.start(((timestamp === window.undefined) ? 0 : timestamp) + audioContext.currentTime, (duration === window.undefined) ? 0 : duration);
         sound.run = 1;
         sound.start = previousTimestamp;
+        window.console.log("Start", sound.url, sound.fade, sound.fadeMax, duration);
     };
 
     function loadSound(sound) {
         if (sound.isLoaded === 2)
             return;
+        window.console.log("LOAD", sound);
         var xhr = new window.XMLHttpRequest;
         xhr.open('GET', sound.url, true);
         xhr.responseType = 'arraybuffer';
@@ -8375,6 +8597,14 @@ var Loader = (function() {
                             continue;
                         }
 
+                        if (ghl === ["br"]) {
+                            regionName = regionName.replace("BR", "");
+                            if (Home.regions[regionName] === window.undefined)
+                                Home.regions[regionName] = [];
+                            Home.regions[regionName].push(i);
+                            continue;
+                        }
+
                         for (var j = 0; j < regions.length; j++) {
                             if (regions[j] === regionName) {
                                 regionPlayers[j] += playerNumber;
@@ -8412,6 +8642,7 @@ var Loader = (function() {
                         var serverIndex = 0;
                         for (var k = 0; k < Home.regions[i].length; k++)
                             serverIndex += serverList[Home.regions[i][k]][5];
+                        //Home.htmlBattleRoyale += ((((('<option value="' + i) + '">') + i) + "  - ") + serverIndex) + "  players</option>";
                     }
                     Home.privateServer = Home.privateServer.sort(function(a, M) {
                         return window.Number(serverList[M][5]) - window.Number(serverList[a][5]);
@@ -8432,7 +8663,7 @@ var Loader = (function() {
                     window.document.getElementById("serverList").innerHTML = serverDropdownHTML;
                     window.document.getElementById("servers").selectedIndex = selectedIndex;
                     
-                    World.PLAYER.admin = 1;
+                    World.PLAYER.admin = 1; //added just taked from beloved if, whatever xD
 
                     if (((Loader.getURLData("admin") !== null) || (Loader.getURLData("member") !== null)) || (Loader.getURLData("moderator") !== null)) {
                         if ((Loader.getURLData("admin") !== null) || (Loader.getURLData("moderator") !== null)) {
@@ -8491,14 +8722,17 @@ var Loader = (function() {
 
 var Home = (function() {
 
-    let lastCallTime = 0;
     async function joinServer() {
-        const now = Date.now();
-        if (now - lastCallTime < 30000) {
-            console.error('Too many requests, please try again later.');
-            return;
+        checkAdBlocker();
+    
+        if (shouldShowAds()) {
+            if (Home.waitAds === 1) return;
+            if (Home.ads === 1) {
+                await showAds();
+                return;
+            }
         }
-        lastCallTime = now;
+    
         const gameMode = getGameMode();
         const serverId = document.getElementById('servers').value;
         const [lobFind, lobID] = getLobbyDetails(gameMode, serverId);
@@ -8509,6 +8743,38 @@ var Home = (function() {
         } catch (error) {
             console.error(error);
         }
+    }
+    
+    function checkAdBlocker() {
+        try {
+            document.getElementsByClassName("ympb_target")[0].id;
+            document.getElementById("trevda").id;
+            document.getElementById("preroll").id;
+        } catch (error) {
+            Home.adblocker = 1;
+        }
+    }
+    
+    function shouldShowAds() {
+        return (
+            World.PLAYER.admin !== 1 &&
+            typeof window["YMPB"] !== 'undefined' &&
+            typeof window["YMPB"]["preroll"] !== 'undefined'
+        );
+    }
+    
+    function showAds() {
+        return new Promise((resolve) => {
+            AudioManager.cutTitleMusic();
+            document.getElementById("preroll").style.display = "block";
+            window["YMPB"]["preroll"]('preroll', () => {
+                Home.waitAds = 0;
+                Home.ads = -1;
+                Home.joinServer();
+                resolve();
+            });
+            Home.waitAds = 1;
+        });
     }
     
     function getGameMode() {
@@ -8526,9 +8792,9 @@ var Home = (function() {
     
     function getLobbyDetails(gameMode, serverId) {
         if (serverId === 'auto') {
-            return ['https://devastio.duckdns.org/find', { 'game_modes': [gameMode] }];
+            return ['https://api.eg.rivet.gg/matchmaker/lobbies/find', { 'game_modes': [gameMode] }];
         } else {
-            return ['https://devastio.duckdns.org/join', { 'lobby_id': serverId }];
+            return ['https://api.eg.rivet.gg/matchmaker/lobbies/join', { 'lobby_id': serverId }];
         }
     }
     
@@ -8588,20 +8854,20 @@ var Home = (function() {
         _en: [{
             _name: 'Yuukun',
             button: ["img/yuukun0out.png", "img/yuukun0in.png", "img/yuukun0click.png"],
-            _url: "https://discord.gg/eWJzDYeuhG"
+            _url: "https://energy.youtube.com/watch?v=TyI_8Il64d8"
         }, {
             _name: 'eXistenZ',
             button: ["img/existenz5out.png", "img/existenz5in.png", "img/existenz5click.png"],
-            _url: "https://discord.gg/eWJzDYeuhG"
+            _url: "https://energy.youtube.com/watch?v=Seq6QGBTvNQ"
         }, {
             _name: 'Bubble Gum',
             button: ["img/bubblegum2out.png", "img/bubblegum2in.png", "img/bubblegum2click.png"],
-            _url: "https://discord.gg/eWJzDYeuhG"
+            _url: "https://youtu.be/fD7lx9zAQGU"
         }],
         _fr: [{
             _name: 'Devaster',
             button: ["img/devaster0out.png", "img/devaster0in.png", "img/devaster0click.png"],
-            _url: "https://discord.gg/eWJzDYeuhG"
+            _url: "https://energy.youtube.com/watch?v=Jpgx-d3qHzs"
         }]
     };
     var WVwwn = mNMWw._en;
@@ -8659,6 +8925,7 @@ var Home = (function() {
     var privateServer;
     var vvmMm;
     var wMNWw;
+    var trevdaStyle;
     var vWNNw;
     var VvVMm;
     var VwWMv;
@@ -8666,6 +8933,19 @@ var Home = (function() {
 
     function init() {
         Home.joinServer = joinServer;
+        Home.ads = 1;
+        Home.waitAds = 0;
+        /*var WvMwn = new window.XMLHttpRequest;
+        WvMwn.onreadystatechange = function() {
+            if ((this.readyState === 4) && (this.status === 0)) {
+                Home.adblocker = 1;
+                window.document.getElementById("trevda").innerHTML = '<img src="./img/disable-to-get-bonus.png"></img>';
+            }
+        };
+        WvMwn.open("GET", "https://api.adinplay.com/libs/aiptag/assets/adsbygoogle.js", true);
+        WvMwn.send();
+        */
+        if (window.String(window.document.createElement).indexOf("createElement") === -1) Home.adblocker = 1;
         Home.gameMode = 0;
         Home.publicMode = 1;
         Home.alertId = 0;
@@ -8804,6 +9084,8 @@ var Home = (function() {
         else privateServer = GUI.createButton(86, 48, ["img/privateserver-button-out.png", "img/privateserver-button-in.png", "img/privateserver-button-click.png"]);
         if (isTouchScreen === 1) vvmMm = GUI.createButton(0, 0);
         else vvmMm = GUI.createButton(52, 42, ["img/map-editor-button-out.png", "img/map-editor-button-in.png", "img/map-editor-button-click.png"]);
+        wMNWw = window.document.getElementById("trevda");
+        trevdaStyle = wMNWw.style;
         vWNNw = {
             x: 0,
             y: 0
@@ -8843,6 +9125,7 @@ var Home = (function() {
             VMm.hide();
             wnm.hide();
         }
+        Home.trevdaStyle = trevdaStyle;
         if (isTouchScreen === 1) {
             wMMNm.hide();
             wvmwM.hide();
@@ -8953,9 +9236,14 @@ var Home = (function() {
         vvmMm.pos.x = privateServer.pos.x + window.Math.floor(-8.5 * scaleby);
         vvmMm.pos.y = privateServer.pos.y + window.Math.floor(-53 * scaleby);
         vWNNw.x = canw2 - window.Math.floor(150 * scaleby);
+        trevdaStyle.left = vWNNw.x + "px";
         vWNNw.y = VWvmM.y + window.Math.floor(130 * scaleby);
+        trevdaStyle.top = vWNNw.y + "px";
         var mVvwv = window.Math.min(scaleby, 1);
         var pos = (VWvmM.y + transitionY) + (170 * scaleby);
+        window.document.getElementById("trevda").style.left = window.Math.floor(canw2 - (325 * mVvwv)) + "px";
+        window.document.getElementById("trevda").style.top = window.Math.floor(pos + (((mVvwv * 250) - 250) / 2)) + "px";
+        window.document.getElementById("trevda").style.transform = ("scale(" + mVvwv) + ")";
         var mwNww = window.document.getElementById("nicknameInput").style;
         var width = window.Math.floor(220 * scaleby);
         var height = window.Math.floor(35 * scaleby);
@@ -9187,6 +9475,7 @@ var Home = (function() {
                 vnvmm.display = "none";
                 privateServer.setState(GUI.__BUTTON_OUT__);
                 vvmMm.setState(GUI.__BUTTON_OUT__);
+                trevdaStyle.display = "none";
                 VwWMv.display = "none";
                 transitionSpeed.run();
                 return 0;
@@ -9196,6 +9485,7 @@ var Home = (function() {
             update();
             if (transitionDuration < 0) {
                 reverseTransitionState = 0;
+                if (World.PLAYER.admin !== 1) trevdaStyle.display = "inline-block";
                 window.document.getElementById("bod").style.backgroundColor = "#46664d";
                 MmNNN();
             }
@@ -9270,7 +9560,7 @@ var Home = (function() {
         var vnm = 0;
         if (mVwVw.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("https://iogames.space", "_blank");
         }
         if (playbutt.trigger() === 1) {
             vnm = 1;
@@ -9280,23 +9570,23 @@ var Home = (function() {
         }
         if (twitter.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("https://twitter.com/lapamauve", "_blank");
         }
         if (facebook.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open(" https://energy.facebook.com/limaxio-571818073000979", "_blank");
         }
         if (youtube.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("https://youtube.com/c/LapaMauve", "_blank");
         }
         if (reddit.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("https://energy.reddit.com/r/devastio/", "_blank");
         }
         if (discord.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("https://discord.gg/V4KXEwr", "_blank");
         }
         if (NvW.trigger() === 1) {
             vnm = 1;
@@ -9359,7 +9649,22 @@ var Home = (function() {
         }
         if (wnm.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            if ((Home.publicMode !== 0) && (Home.gameMode === 0)) {
+                if (((Client.state & State.__PENDING__) === 0) && ((Client.state & State.__CONNECTED__) === 0)) {
+                    Home.serverTest = 0;
+                    Home.publicMode = 0;
+                    AudioUtils.playFx(AudioUtils._fx.button, 1, 0);
+                    NvW.hide();
+                    VmwMm.hide();
+                    vvWWW.hide();
+                    Home.survivalHtml = window.document.getElementById("serverList").innerHTML;
+                    Home.survivalIndex = window.document.getElementById("servers").selectedIndex;
+                    window.document.getElementById("serverList").innerHTML = Home.htmlPrivateServer;
+                    Home.serverTest = 0;
+                    window.document.getElementById("servers").selectedIndex = 0;
+                    update();
+                }
+            }
         }
         if (VMm.trigger() === 1) {
             vnm = 1;
@@ -9378,23 +9683,23 @@ var Home = (function() {
         }
         if (nvWwv.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("http://limax.io", "_blank");
         }
         if (WwWvv.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("http://oib.io", "_blank");
         }
         if (wvmmM.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("http://starve.io", "_blank");
         }
         if (mNVWV.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("https://nend.io", "_blank");
         }
         if (privateServer.trigger() === 1) {
             vnm = 1;
-            var OPEN = window.open("https://discord.gg/eWJzDYeuhG", "_blank");
+            var OPEN = window.open("https://devast.io/private-server", "_blank");
         }
         if (vvmMm.trigger() === 1) {
             vnm = 1;
@@ -9534,6 +9839,7 @@ var Home = (function() {
 var chatvisible     = 0;
 var Game = (function() {
     function onError(state) {
+        window.console.log("onError", state);
         if (World.gameMode === 1) quit(Rank);
         else quit(Score);
     };
@@ -9742,9 +10048,12 @@ var Game = (function() {
         for (i = 0; i < 3; i++) tools.push(GUI.createButton(size, size, null, inventoryEmpty2));
         for (i = 0; i < 9; i++) kick.push(GUI.createButton(29, 27, null, removebuttout));
         for (i = 0; i < 18; i++) join.push(GUI.createButton(44, 33, null, joinbuttout));
+
+        //AUTOLOOT \/\/
         size = 30;
         for (i = 0; i < 171; i++) autoloot.push(GUI.createButton(size, size, null, inventoryEmpty2));
         Game.autoloot           = autoloot;
+        //AUTOLOOT /\/\
 
         Game.BUTTON_CLOSE_BOX   = _CloseBox;
         Game.openBox            = _OpenBox;
@@ -9844,6 +10153,7 @@ var Game = (function() {
         }
         window.document.getElementById("bod").style.backgroundColor = "#46664D";
         nmMMm = 0;
+        Home.ads++;
         Game.teamName = "";
         Game.teamNameValid = 0;
         AudioManager.startGame();
@@ -9851,6 +10161,7 @@ var Game = (function() {
             teambutt.hide();
             craftbutton.show();
         } else if (World.PLAYER.ghoul > 0) {
+            window.console.log("HERE");
             teambutt.hide();
             craftbutton.hide();
         } else {
@@ -11234,6 +11545,7 @@ var Score = (function() {
             VmVNw = (VmVNw + delta) % 1000;
         }
     };
+    var waitAds = 0;
     var mNw;
     var playagainbutt;
     var vWv;
@@ -11289,6 +11601,7 @@ var Score = (function() {
     };
 
     function quit(callback) {
+        Home.trevdaStyle.display = "none";
         transitionSpeed = callback;
         VVwMW();
         transitionDuration = transitionDuration;
@@ -11315,6 +11628,9 @@ var Score = (function() {
         vWv.pos.x = ((canw2 - window.Math.floor(99 * scaleby)) + window.Math.floor(100 * scaleby)) - transitionX;
         vWv.pos.y = playagainbutt.pos.y;
         var mVvwv = window.Math.min(scaleby, 1);
+        window.document.getElementById("trevda").style.top = window.Math.floor((canh2 - 125) + (140 * mVvwv)) + "px";
+        window.document.getElementById("trevda").style.transform = ("scale(" + mVvwv) + ")";
+        window.document.getElementById("trevda").style.left = window.Math.floor(canw2 - (325 * mVvwv)) + "px";
     };
 
     function draw() {
@@ -11335,7 +11651,10 @@ var Score = (function() {
         nmNnw();
         Render.alertServer();
         AudioManager.scheduler();
-        playagainbutt.draw();
+        if (waitAds > 0) {
+            waitAds = window.Math.max(0, waitAds - delta);
+            CanvasUtils.drawImageHd(WAITADS[window.Math.floor(waitAds / 1000)], (playagainbutt.pos.x / scaleby) + 61.5, (playagainbutt.pos.y / scaleby) + 17.75, 0, 0, 0, 1);
+        } else playagainbutt.draw();
     };
 
     function transitionManager() {
@@ -11353,6 +11672,7 @@ var Score = (function() {
             update();
             if (transitionDuration < 0) {
                 reverseTransitionState = 0;
+                if (World.PLAYER.admin !== 1) Home.trevdaStyle.display = "inline-block";
                 window.document.getElementById("bod").style.backgroundColor = "#46664d";
                 MmNNN();
             }
@@ -11377,8 +11697,10 @@ var Score = (function() {
         var vnm = 0;
         if (playagainbutt.trigger() === 1) {
             vnm = 1;
-            Home.joinServer();
-            AudioUtils.playFx(AudioUtils._fx.play, 1, 0);
+            if (waitAds <= 0) {
+                Home.joinServer();
+                AudioUtils.playFx(AudioUtils._fx.play, 1, 0);
+            }
             return;
         }
         if (vWv.trigger() === 1) {
@@ -11511,6 +11833,7 @@ var Rank = (function() {
         }
         CanvasUtils.drawImageHd(vMMnW, wX_Scale + 309, wY_Scale + 100, 0, 0, 0, 1);
     };
+    var waitAds = 0;
     var mNw;
     var playagainbutt;
     var vWv;
@@ -11553,6 +11876,7 @@ var Rank = (function() {
     };
 
     function quit(callback) {
+        Home.trevdaStyle.display = "none";
         transitionSpeed = callback;
         VVwMW();
         transitionDuration = transitionDuration;
@@ -11579,6 +11903,8 @@ var Rank = (function() {
         vWv.pos.x = ((canw2 - window.Math.floor(99 * scaleby)) + window.Math.floor(70 * scaleby)) - transitionX;
         vWv.pos.y = playagainbutt.pos.y;
         var mVvwv = scaleby;
+        window.document.getElementById("trevda").style.top = window.Math.floor((canh2 - 125) + (130 * mVvwv)) + "px";
+        window.document.getElementById("trevda").style.transform = ("scale(" + mVvwv) + ")";
     };
 
     function draw() {
@@ -11599,7 +11925,10 @@ var Rank = (function() {
         nmNnw();
         Render.alertServer();
         AudioManager.scheduler();
-        playagainbutt.draw();
+        if (waitAds > 0) {
+            waitAds = window.Math.max(0, waitAds - delta);
+            CanvasUtils.drawImageHd(WAITADS[window.Math.floor(waitAds / 1000)], (playagainbutt.pos.x / scaleby) + 61.5, (playagainbutt.pos.y / scaleby) + 17.75, 0, 0, 0, 1);
+        } else playagainbutt.draw();
     };
 
     function transitionManager() {
@@ -11617,6 +11946,7 @@ var Rank = (function() {
             update();
             if (transitionDuration < 0) {
                 reverseTransitionState = 0;
+                Home.trevdaStyle.display = "inline-block";
                 window.document.getElementById("bod").style.backgroundColor = "#46664d";
                 MmNNN();
             }
@@ -11641,8 +11971,10 @@ var Rank = (function() {
         var vnm = 0;
         if (playagainbutt.trigger() === 1) {
             vnm = 1;
-            Home.joinServer();
-            AudioUtils.playFx(AudioUtils._fx.play, 1, 0);
+            if (waitAds <= 0) {
+                Home.joinServer();
+                AudioUtils.playFx(AudioUtils._fx.play, 1, 0);
+            }
             return;
         }
         if (vWv.trigger() === 1) {
@@ -14067,6 +14399,7 @@ try {
         };
 
         function _Inventory(inventoryItemNumber, inventoryAmmoNumber, MmV, BUTTON_BAG) {
+            //if (World.PLAYER.ghoul !== 0) return;
             var inventory = Game.inventory;
             if (inventorySlot.isLoaded !== 1) {
                 inventorySlot = CanvasUtils.loadImage(IMG_INV_EMPTY, inventorySlot);
@@ -14139,6 +14472,7 @@ try {
             var life = World.gauges.life;
             var value = life.current / life._max;
             CanvasUtils.fillRect(ctx, (offsetX / scaleby) + 14, (offsetY / scaleby) + 71, value * 189, 16, COLOR_LIGHTGREEN);
+            //if (MOD.showHP) CanvasUtils.fillText(ctx, Math.floor(life.current), offsetX / scaleby + 100, offsetY / scaleby + 84, '#FFFFFF', '24px Black Han Sans');
             var food = World.gauges.food;
             var value = food.current / food._max;
             CanvasUtils.fillRect(ctx, (offsetX / scaleby) + 13, (offsetY / scaleby) + 162, 54, -value * 63, COLOR_ORANGE);
@@ -14176,7 +14510,7 @@ try {
             CanvasUtils.drawImageHd(wnvmV, 144.5 + (offsetX / scaleby), (offsetY / scaleby) + 56, elapsedTime * mWvNn, 0, 0, 1);
 
             var LifeNumberLabel = null;
-
+            // Life Value Label
             if (MOD.ShowHP) {
                 if (LifeNumberLabel === null) LifeNumberLabel = GUI.renderText(~~life.current, "'Viga', sans-serif", "#00FF00", 25, 400, window.undefined, 16, 25, window.undefined, window.undefined, window.undefined, window.undefined, "#000000", 10);
                 var img2 = LifeNumberLabel;
@@ -15109,6 +15443,7 @@ try {
                 } else PLAYER.team = -1;
             }
 
+            // Auto Eat Label
             if (MOD.autoEat) {
                 if (AutoEatLabel === null) AutoEatLabel = GUI.renderText('FOOD', "'Viga', sans-serif", "#00FF00", 20, 400, window.undefined, 16, 25, window.undefined, window.undefined, window.undefined, window.undefined, "#000000", 10);
                 var img = AutoEatLabel;
@@ -15116,6 +15451,7 @@ try {
                 ctx.drawImage(img, ((vertst + World.PLAYER.x) - (img.wh / 2)) * scaleby, ((horist + World.PLAYER.y) - offsetY + 32) * scaleby, img.wh * scaleby, img.h2 * scaleby);
             }
 
+            // Auto Loot Label
             if (MOD.autoLoot) {
                 if (AutoLootLabel === null) AutoLootLabel = GUI.renderText('LOOT', "'Viga', sans-serif", "#FF0000", 20, 400, window.undefined, 16, 25, window.undefined, window.undefined, window.undefined, window.undefined, "#000000", 10);
                 var img = AutoLootLabel;
@@ -15123,6 +15459,7 @@ try {
                 ctx.drawImage(img, ((vertst + World.PLAYER.x) - (img.wh / 2)) * scaleby, ((horist + World.PLAYER.y) - offsetY + 21) * scaleby, img.wh * scaleby, img.h2 * scaleby);
             }
 
+            // Aim Bot Label
             if (MOD.AimBotEnable) {
                 if (AimBotLabel === null) AimBotLabel = GUI.renderText('AIM', "'Viga', sans-serif", "#ad00e3", 20, 400, window.undefined, 16, 25, window.undefined, window.undefined, window.undefined, window.undefined, "#000000", 10);
                 var img = AimBotLabel;
@@ -15973,7 +16310,7 @@ try {
                     var VMV = matrix[World.PLAYER.iBuild][World.PLAYER.jBuild];
                     var team = (World.PLAYER.team === -1) ? -2 : World.PLAYER.team;
                     if ((VMV.tile === frameId) && (((item.zid !== 2) || (VMV.tilePid === 0)) || (VMV.category === SKILLS.__PLANT__))) {
-                        World.PLAYER.canBuild = 1;
+                        World.PLAYER.canBuild = 1; // before 0
                         CanvasUtils.drawImageHd(item.redprint, offsetX, offsetY, rotation * PIby2, 0, 0, 1);
                     } else if ((((item.detail.category === SKILLS.__PLANT__) || (item.zid === 2)) || (((VMV.pid !== 0) && (VMV.pid !== World.PLAYER.id)) && (World.players[VMV.pid].team !== team))) && (VMV.ground === frameId)) {
                         World.PLAYER.canBuild = 0;
@@ -16434,6 +16771,7 @@ try {
             else {
                 var isVisible = 0;
                 if (((building.pid === World.PLAYER.id) || (((World.PLAYER.team !== -1) && (World.PLAYER.team === World.players[building.pid].team)) && (World.players[building.pid].teamUid === World.teams[World.PLAYER.team].uid))) || (Math2d.fastDist(NmM, WWV, building.x, building.y) < 52000)) isVisible = 1;
+                //CanvasUtils.drawImageHd(item.building, (vertst + building.x) + offsetX, (horist + building.y) + offsetY, rotation * PIby2, 0, 0, imageScale);
         
                 if (isVisible === 1) {
                     if (building.breath === 300) CanvasUtils.drawImageHd(item.building, (vertst + building.x) + offsetX, (horist + building.y) + offsetY, rotation * PIby2, 0, 0, imageScale);
@@ -17079,6 +17417,14 @@ try {
                 ctx.globalAlpha = 1;
             }
 
+            /*
+            var size = type.radius;
+            ctx.beginPath();
+            ctx.arc(scaleby * ((vertst + resource.x) + offsetX),scaleby * ((horist + resource.y) + offsetY), scaleby * size, 0, 2 * Math.PI);
+            ctx.strokeStyle = '#FF0000';
+            ctx.stroke();
+            */
+
             if (pathFinder) {
                 for (var x = 0; x < pworldWidth; x++) {
                     for (var y = 0; y < pworldHeight; y++) {
@@ -17144,7 +17490,7 @@ try {
             }
 
             if (pathFinder) {
-                if (INVENTORY[item.id].draw != Render.groundFloor) {
+                if (INVENTORY[item.id].draw != Render.groundFloor) { // dont count floor
                     for (var x = 0; x < pworldWidth; x++) {
                         for (var y = 0; y < pworldHeight; y++) {
                                 pworld[building.j][building.i] = 1;
@@ -17156,29 +17502,35 @@ try {
             if (MOD.buildingOwner) drawBuildingRectangle(building);
         };
 
+        // Function to draw rectangle around building
         function drawBuildingRectangle(building) {
+            // Constants
             var gridSize = 100;
-            var width = 100;
-            var height = 100;
+            var width = 100;   // Use the first element for the width
+            var height = 100;  // Use the second element for the height
 
+            // Calculate snapped mouse coordinates
             var mouseX = Math.round(GetAllTargets.mouseMapCords.x);
             var mouseY = Math.round(GetAllTargets.mouseMapCords.y);
             var snappedMouseX = Math.floor(mouseX / gridSize) * gridSize;
             var snappedMouseY = Math.floor(mouseY / gridSize) * gridSize;
 
+            // Calculate grid positions
             var gridPosX = Math.floor(building.x / gridSize);
             var gridPosY = Math.floor(building.y / gridSize);
 
+            // Check if the mouse is over the building's grid position and building.pid is not 0
             if (snappedMouseX === gridPosX * gridSize && snappedMouseY === gridPosY * gridSize && building.pid !== 0) {
+                // Calculate dimensions and positioning
                 var scaledWidth = scaleby * width;
                 var scaledHeight = scaleby * height;
-                var offsetX = 0;
-                var offsetY = 0;
+                var offsetX = 0; // Assuming offsetX and offsetY are defined elsewhere
+                var offsetY = 0; // Adjust as per your requirements
 
                 var x = scaleby * (vertst + snappedMouseX + offsetX) - scaledWidth / 2;
                 var y = scaleby * (horist + snappedMouseY + offsetY) - scaledHeight / 2;
-                x += scaledWidth / 2;
-                y += scaledHeight / 2;
+                x += scaledWidth / 2; // Adjust to center the rectangle
+                y += scaledHeight / 2; // Adjust to center the rectangle
 
                 var isInClan = 0;
                 if (((building.pid === World.PLAYER.id) || (((World.PLAYER.team !== -1) && (World.PLAYER.team === World.players[building.pid].team)) && (World.players[building.pid].teamUid === World.teams[World.PLAYER.team].uid)))) {
@@ -17187,18 +17539,19 @@ try {
 
                 var lineColor;
                 if (isInClan === 1) {
-                    lineColor = MOD.TeamColor;
+                    lineColor = MOD.TeamColor; // Team color
                 } else {
-                    lineColor = MOD.EnemyColor;
+                    lineColor = MOD.EnemyColor; // Enemy color
                 }
 
                 ctx.lineWidth = 2;
-
+                // Drawing rectangle
                 ctx.beginPath();
                 ctx.rect(x, y, scaledWidth, scaledHeight);
                 ctx.strokeStyle = lineColor;
                 ctx.stroke();
 
+                // Draw building ID or other information
                 drawDarkBox2(building, x, y)
                 drawText(building.i, building.j, building.pid);
             }
@@ -17226,6 +17579,7 @@ try {
                         var type = playerGauges.type;
                         var mvnVn = Entitie.units[type][playerGauges.cycle];
                         if (((mvnVn.pid !== World.PLAYER.id)) && (Math2d.distance(mvnVn.x, mvnVn.y, bullet.x, bullet.y) < (ENTITIES[type].radius - 4))) {
+                            window.console.log("DETECTED");
                             bullet.rx = bullet.x;
                             bullet.ry = bullet.y;
                             bullet.nx = bullet.x;
@@ -17272,6 +17626,7 @@ try {
                 var distance = Math2d.fastDist(NmM, WWV, loot.x, loot.y);
                 if (distance < distance12k) {
 
+                    //Auto Loot
                     if (MOD.autoLoot) {
                         if (MOD.useLootData) {
                             for (let lootType in LootData) {
@@ -17281,13 +17636,14 @@ try {
                                     loot.extra === LootData[lootType].extra
                                 ) {
                                     Client.sendPacket(window.JSON.stringify([12, loot.id]));
-                                    break;
+                                    break; // Break the loop once we find a matching item
                                 }
                             }
                         } else {
                             Client.sendPacket(window.JSON.stringify([12, loot.id]));
                         }
                     };
+                    // -----
 
                     distance12k = distance;
                     World.PLAYER.loot = loot.extra;
@@ -18061,17 +18417,18 @@ try {
         };
     })();
 
-var ent, inhandID, weapon;
-var myplayerhit = 0;
-
-function _CheckMyPlayer(player) {
-    if(World.PLAYER.id === player.pid) { 
-        ent         = ENTITIES[__ENTITIE_PLAYER__];
-        inhandID    = (player.extra >> 8) & 255;
-        weapon      = ent.weapons[inhandID];
-        myplayerhit = player.hit;
+    var ent, inhandID, weapon, myBulletSpeed;
+    var myplayerhit = 0;
+    
+    function _CheckMyPlayer(player) {
+        if(World.PLAYER.id === player.pid) { 
+            ent         = ENTITIES[__ENTITIE_PLAYER__];
+            inhandID    = (player.extra >> 8) & 255;
+            weapon      = ent.weapons[inhandID];
+            myBulletSpeed = weapon.bulletSpeed;
+            myplayerhit = player.hit;
+        }
     }
-}
 
 function _AutoEat(delta) {
     if (MOD.autoEat) {
@@ -18160,7 +18517,7 @@ function _AutoEat(delta) {
         }
 
         if (myplayerhit !== 0) {
-            Client.sendMouseUp();
+            Client.sendMouseUp(); // Ensure no interference with gameplay
         }
     }
 }
@@ -18384,11 +18741,11 @@ SOUND[SOUNDID.__WOOD_IMPACT__]      = "audio/wood-impact.mp3";
 SOUND[SOUNDID.__STONE_IMPACT__]     = "audio/stone-impact2.mp3";
 SOUND[SOUNDID.__STONE_IMPACT_2__]   = "audio/stone-impact.mp3";
 SOUND[SOUNDID.__STEEL_IMPACT__]     = "audio/metal-impact2.mp3";
-SOUND[SOUNDID.__PILLOW_IMPACT__]    = "audio/pillow-impact.mp3";
+SOUND[SOUNDID.__PILLOW_IMPACT__]    = "audio/pillow-impact-impact.mp3";
 SOUND[SOUNDID.__WOOD_DESTROY__]     = "audio/wood-destroy3.mp3";
 SOUND[SOUNDID.__STONE_DESTROY__]    = "audio/stone-destroy.mp3";
 SOUND[SOUNDID.__STEEL_DESTROY__]    = "audio/metal-destroy2.mp3";
-SOUND[SOUNDID.__PILLOW_DESTROY__]   = "audio/pillow-destroy.mp3";
+SOUND[SOUNDID.__PILLOW_DESTROY__]   = "audio/pillow-impact-destroy.mp3";
 
 var SOUND_LENGTH = SOUND.length;
 
@@ -18804,6 +19161,32 @@ var PARTICLESID = {
     __GOLD__:           COUNTER++
 };
 
+var WAITADS = [{
+    src: "img/wait-ads-1.png",
+    img: {
+        isLoaded: 0
+    }
+}, {
+    src: "img/wait-ads-2.png",
+    img: {
+        isLoaded: 0
+    }
+}, {
+    src: "img/wait-ads-3.png",
+    img: {
+        isLoaded: 0
+    }
+}, {
+    src: "img/wait-ads-4.png",
+    img: {
+        isLoaded: 0
+    }
+}, {
+    src: "img/wait-ads-5.png",
+    img: {
+        isLoaded: 0
+    }
+}];
 var PARTICLES = [];
 PARTICLES[PARTICLESID.__NOTHING__] = [];
 PARTICLES[PARTICLESID.__WOOD__] = [{
@@ -43701,6 +44084,37 @@ var AudioManager = (function() {
         geiger:         0
     };
 })();
+try {
+    debugMode;
+} catch (error) {
+    debugMode = window.undefined;
+}
+if (debugMode === window.undefined) {
+    window.aiptag = window.aiptag || ({});
+    window.aiptag["consented"] = true;
+    window.aiptag["cmd"] = window.aiptag["cmd"] || ([]);
+    window.aiptag["cmd"]["display"] = window.aiptag["cmd"]["display"] || ([]);
+    window.aiptag["cmd"]["player"] = window.aiptag["cmd"]["player"] || ([]);
+     var fun = function() {        
+        adplayer = new aipPlayer({
+            AD_WIDTH: 960,
+            AD_HEIGHT: 540,
+            AD_FULLSCREEN: true,
+            AD_CENTERPLAYER: true,
+            LOADING_TEXT: 'loading advertisement',
+            PREROLL_ELEM: function() {
+                return window.document.getElementById('preroll');
+            },
+            AIP_COMPLETE: function(nMWWmvw) {
+                Home.waitAds = 0;
+                Home.ads = -1;
+                Home.joinServer();
+            },
+            AIP_REMOVE: function() {}
+        });
+    };
+    window.aiptag["cmd"]["player"].push(fun);
+}
 
 function reloadIframe() {
     try {
@@ -43716,7 +44130,12 @@ function reloadIframe() {
 };
 reloadIframe();
 
-var versionInf = [30, 2104];
+var versionInf = [30, 2079];
+try {
+    debugMode;
+} catch (error) {
+    debugMode = window.undefined;
+}
 
 Entitie.init(600, 30000, 5000);
 Client.init(30, 15000, 2000, 3, 60000, 10000, onMessageRaw, onMessageJSON, onFirstMessage);
@@ -43740,4 +44159,19 @@ window.onbeforeunload = function() {
 };
 waitHTMLAndRun();
 
-!function(t,i){"object"==typeof exports&&"undefined"!=typeof module?i(exports):"function"==typeof define&&define.amd?define(["exports"],i):i((t=t||self).lil={})}(this,(function(t){"use strict";class i{constructor(t,e,s,n,l="div"){this.parent=t,this.object=e,this.property=s,this._disabled=!1,this._hidden=!1,this.initialValue=this.getValue(),this.domElement=document.createElement(l),this.domElement.classList.add("controller"),this.domElement.classList.add(n),this.$name=document.createElement("div"),this.$name.classList.add("name"),i.nextNameID=i.nextNameID||0,this.$name.id="lil-gui-name-"+ ++i.nextNameID,this.$widget=document.createElement("div"),this.$widget.classList.add("widget"),this.$disable=this.$widget,this.domElement.appendChild(this.$name),this.domElement.appendChild(this.$widget),this.domElement.addEventListener("keydown",t=>t.stopPropagation()),this.domElement.addEventListener("keyup",t=>t.stopPropagation()),this.parent.children.push(this),this.parent.controllers.push(this),this.parent.$children.appendChild(this.domElement),this._listenCallback=this._listenCallback.bind(this),this.name(s)}name(t){return this._name=t,this.$name.textContent=t,this}onChange(t){return this._onChange=t,this}_callOnChange(){this.parent._callOnChange(this),void 0!==this._onChange&&this._onChange.call(this,this.getValue()),this._changed=!0}onFinishChange(t){return this._onFinishChange=t,this}_callOnFinishChange(){this._changed&&(this.parent._callOnFinishChange(this),void 0!==this._onFinishChange&&this._onFinishChange.call(this,this.getValue())),this._changed=!1}reset(){return this.setValue(this.initialValue),this._callOnFinishChange(),this}enable(t=!0){return this.disable(!t)}disable(t=!0){return t===this._disabled||(this._disabled=t,this.domElement.classList.toggle("disabled",t),this.$disable.toggleAttribute("disabled",t)),this}show(t=!0){return this._hidden=!t,this.domElement.style.display=this._hidden?"none":"",this}hide(){return this.show(!1)}options(t){const i=this.parent.add(this.object,this.property,t);return i.name(this._name),this.destroy(),i}min(t){return this}max(t){return this}step(t){return this}decimals(t){return this}listen(t=!0){return this._listening=t,void 0!==this._listenCallbackID&&(cancelAnimationFrame(this._listenCallbackID),this._listenCallbackID=void 0),this._listening&&this._listenCallback(),this}_listenCallback(){this._listenCallbackID=requestAnimationFrame(this._listenCallback);const t=this.save();t!==this._listenPrevValue&&this.updateDisplay(),this._listenPrevValue=t}getValue(){return this.object[this.property]}setValue(t){return this.getValue()!==t&&(this.object[this.property]=t,this._callOnChange(),this.updateDisplay()),this}updateDisplay(){return this}load(t){return this.setValue(t),this._callOnFinishChange(),this}save(){return this.getValue()}destroy(){this.listen(!1),this.parent.children.splice(this.parent.children.indexOf(this),1),this.parent.controllers.splice(this.parent.controllers.indexOf(this),1),this.parent.$children.removeChild(this.domElement)}}class e extends i{constructor(t,i,e){super(t,i,e,"boolean","label"),this.$input=document.createElement("input"),this.$input.setAttribute("type","checkbox"),this.$input.setAttribute("aria-labelledby",this.$name.id),this.$widget.appendChild(this.$input),this.$input.addEventListener("change",()=>{this.setValue(this.$input.checked),this._callOnFinishChange()}),this.$disable=this.$input,this.updateDisplay()}updateDisplay(){return this.$input.checked=this.getValue(),this}}function s(t){let i,e;return(i=t.match(/(#|0x)?([a-f0-9]{6})/i))?e=i[2]:(i=t.match(/rgb\(\s*(\d*)\s*,\s*(\d*)\s*,\s*(\d*)\s*\)/))?e=parseInt(i[1]).toString(16).padStart(2,0)+parseInt(i[2]).toString(16).padStart(2,0)+parseInt(i[3]).toString(16).padStart(2,0):(i=t.match(/^#?([a-f0-9])([a-f0-9])([a-f0-9])$/i))&&(e=i[1]+i[1]+i[2]+i[2]+i[3]+i[3]),!!e&&"#"+e}const n={isPrimitive:!0,match:t=>"number"==typeof t,fromHexString:t=>parseInt(t.substring(1),16),toHexString:t=>"#"+t.toString(16).padStart(6,0)},l={isPrimitive:!1,match:t=>Array.isArray(t),fromHexString(t,i,e=1){const s=n.fromHexString(t);i[0]=(s>>16&255)/255*e,i[1]=(s>>8&255)/255*e,i[2]=(255&s)/255*e},toHexString:([t,i,e],s=1)=>n.toHexString(t*(s=255/s)<<16^i*s<<8^e*s<<0)},r={isPrimitive:!1,match:t=>Object(t)===t,fromHexString(t,i,e=1){const s=n.fromHexString(t);i.r=(s>>16&255)/255*e,i.g=(s>>8&255)/255*e,i.b=(255&s)/255*e},toHexString:({r:t,g:i,b:e},s=1)=>n.toHexString(t*(s=255/s)<<16^i*s<<8^e*s<<0)},o=[{isPrimitive:!0,match:t=>"string"==typeof t,fromHexString:s,toHexString:s},n,l,r];class a extends i{constructor(t,i,e,n){var l;super(t,i,e,"color"),this.$input=document.createElement("input"),this.$input.setAttribute("type","color"),this.$input.setAttribute("tabindex",-1),this.$input.setAttribute("aria-labelledby",this.$name.id),this.$text=document.createElement("input"),this.$text.setAttribute("type","text"),this.$text.setAttribute("spellcheck","false"),this.$text.setAttribute("aria-labelledby",this.$name.id),this.$display=document.createElement("div"),this.$display.classList.add("display"),this.$display.appendChild(this.$input),this.$widget.appendChild(this.$display),this.$widget.appendChild(this.$text),this._format=(l=this.initialValue,o.find(t=>t.match(l))),this._rgbScale=n,this._initialValueHexString=this.save(),this._textFocused=!1,this.$input.addEventListener("input",()=>{this._setValueFromHexString(this.$input.value)}),this.$input.addEventListener("blur",()=>{this._callOnFinishChange()}),this.$text.addEventListener("input",()=>{const t=s(this.$text.value);t&&this._setValueFromHexString(t)}),this.$text.addEventListener("focus",()=>{this._textFocused=!0,this.$text.select()}),this.$text.addEventListener("blur",()=>{this._textFocused=!1,this.updateDisplay(),this._callOnFinishChange()}),this.$disable=this.$text,this.updateDisplay()}reset(){return this._setValueFromHexString(this._initialValueHexString),this}_setValueFromHexString(t){if(this._format.isPrimitive){const i=this._format.fromHexString(t);this.setValue(i)}else this._format.fromHexString(t,this.getValue(),this._rgbScale),this._callOnChange(),this.updateDisplay()}save(){return this._format.toHexString(this.getValue(),this._rgbScale)}load(t){return this._setValueFromHexString(t),this._callOnFinishChange(),this}updateDisplay(){return this.$input.value=this._format.toHexString(this.getValue(),this._rgbScale),this._textFocused||(this.$text.value=this.$input.value.substring(1)),this.$display.style.backgroundColor=this.$input.value,this}}class h extends i{constructor(t,i,e){super(t,i,e,"function"),this.$button=document.createElement("button"),this.$button.appendChild(this.$name),this.$widget.appendChild(this.$button),this.$button.addEventListener("click",t=>{t.preventDefault(),this.getValue().call(this.object),this._callOnChange()}),this.$button.addEventListener("touchstart",()=>{},{passive:!0}),this.$disable=this.$button}}class d extends i{constructor(t,i,e,s,n,l){super(t,i,e,"number"),this._initInput(),this.min(s),this.max(n);const r=void 0!==l;this.step(r?l:this._getImplicitStep(),r),this.updateDisplay()}decimals(t){return this._decimals=t,this.updateDisplay(),this}min(t){return this._min=t,this._onUpdateMinMax(),this}max(t){return this._max=t,this._onUpdateMinMax(),this}step(t,i=!0){return this._step=t,this._stepExplicit=i,this}updateDisplay(){const t=this.getValue();if(this._hasSlider){let i=(t-this._min)/(this._max-this._min);i=Math.max(0,Math.min(i,1)),this.$fill.style.width=100*i+"%"}return this._inputFocused||(this.$input.value=void 0===this._decimals?t:t.toFixed(this._decimals)),this}_initInput(){this.$input=document.createElement("input"),this.$input.setAttribute("type","text"),this.$input.setAttribute("aria-labelledby",this.$name.id);window.matchMedia("(pointer: coarse)").matches&&(this.$input.setAttribute("type","number"),this.$input.setAttribute("step","any")),this.$widget.appendChild(this.$input),this.$disable=this.$input;const t=t=>{const i=parseFloat(this.$input.value);isNaN(i)||(this._snapClampSetValue(i+t),this.$input.value=this.getValue())};let i,e,s,n,l,r=!1;const o=t=>{if(r){const s=t.clientX-i,n=t.clientY-e;Math.abs(n)>5?(t.preventDefault(),this.$input.blur(),r=!1,this._setDraggingStyle(!0,"vertical")):Math.abs(s)>5&&a()}if(!r){const i=t.clientY-s;l-=i*this._step*this._arrowKeyMultiplier(t),n+l>this._max?l=this._max-n:n+l<this._min&&(l=this._min-n),this._snapClampSetValue(n+l)}s=t.clientY},a=()=>{this._setDraggingStyle(!1,"vertical"),this._callOnFinishChange(),window.removeEventListener("mousemove",o),window.removeEventListener("mouseup",a)};this.$input.addEventListener("input",()=>{let t=parseFloat(this.$input.value);isNaN(t)||(this._stepExplicit&&(t=this._snap(t)),this.setValue(this._clamp(t)))}),this.$input.addEventListener("keydown",i=>{"Enter"===i.key&&this.$input.blur(),"ArrowUp"===i.code&&(i.preventDefault(),t(this._step*this._arrowKeyMultiplier(i))),"ArrowDown"===i.code&&(i.preventDefault(),t(this._step*this._arrowKeyMultiplier(i)*-1))}),this.$input.addEventListener("wheel",i=>{this._inputFocused&&(i.preventDefault(),t(this._step*this._normalizeMouseWheel(i)))},{passive:!1}),this.$input.addEventListener("mousedown",t=>{i=t.clientX,e=s=t.clientY,r=!0,n=this.getValue(),l=0,window.addEventListener("mousemove",o),window.addEventListener("mouseup",a)}),this.$input.addEventListener("focus",()=>{this._inputFocused=!0}),this.$input.addEventListener("blur",()=>{this._inputFocused=!1,this.updateDisplay(),this._callOnFinishChange()})}_initSlider(){this._hasSlider=!0,this.$slider=document.createElement("div"),this.$slider.classList.add("slider"),this.$fill=document.createElement("div"),this.$fill.classList.add("fill"),this.$slider.appendChild(this.$fill),this.$widget.insertBefore(this.$slider,this.$input),this.domElement.classList.add("hasSlider");const t=t=>{const i=this.$slider.getBoundingClientRect();let e=(s=t,n=i.left,l=i.right,r=this._min,o=this._max,(s-n)/(l-n)*(o-r)+r);var s,n,l,r,o;this._snapClampSetValue(e)},i=i=>{t(i.clientX)},e=()=>{this._callOnFinishChange(),this._setDraggingStyle(!1),window.removeEventListener("mousemove",i),window.removeEventListener("mouseup",e)};let s,n,l=!1;const r=i=>{i.preventDefault(),this._setDraggingStyle(!0),t(i.touches[0].clientX),l=!1},o=i=>{if(l){const t=i.touches[0].clientX-s,e=i.touches[0].clientY-n;Math.abs(t)>Math.abs(e)?r(i):(window.removeEventListener("touchmove",o),window.removeEventListener("touchend",a))}else i.preventDefault(),t(i.touches[0].clientX)},a=()=>{this._callOnFinishChange(),this._setDraggingStyle(!1),window.removeEventListener("touchmove",o),window.removeEventListener("touchend",a)},h=this._callOnFinishChange.bind(this);let d;this.$slider.addEventListener("mousedown",s=>{this._setDraggingStyle(!0),t(s.clientX),window.addEventListener("mousemove",i),window.addEventListener("mouseup",e)}),this.$slider.addEventListener("touchstart",t=>{t.touches.length>1||(this._hasScrollBar?(s=t.touches[0].clientX,n=t.touches[0].clientY,l=!0):r(t),window.addEventListener("touchmove",o,{passive:!1}),window.addEventListener("touchend",a))},{passive:!1}),this.$slider.addEventListener("wheel",t=>{if(Math.abs(t.deltaX)<Math.abs(t.deltaY)&&this._hasScrollBar)return;t.preventDefault();const i=this._normalizeMouseWheel(t)*this._step;this._snapClampSetValue(this.getValue()+i),this.$input.value=this.getValue(),clearTimeout(d),d=setTimeout(h,400)},{passive:!1})}_setDraggingStyle(t,i="horizontal"){this.$slider&&this.$slider.classList.toggle("active",t),document.body.classList.toggle("lil-gui-dragging",t),document.body.classList.toggle("lil-gui-"+i,t)}_getImplicitStep(){return this._hasMin&&this._hasMax?(this._max-this._min)/1e3:.1}_onUpdateMinMax(){!this._hasSlider&&this._hasMin&&this._hasMax&&(this._stepExplicit||this.step(this._getImplicitStep(),!1),this._initSlider(),this.updateDisplay())}_normalizeMouseWheel(t){let{deltaX:i,deltaY:e}=t;Math.floor(t.deltaY)!==t.deltaY&&t.wheelDelta&&(i=0,e=-t.wheelDelta/120,e*=this._stepExplicit?1:10);return i+-e}_arrowKeyMultiplier(t){let i=this._stepExplicit?1:10;return t.shiftKey?i*=10:t.altKey&&(i/=10),i}_snap(t){const i=Math.round(t/this._step)*this._step;return parseFloat(i.toPrecision(15))}_clamp(t){return t<this._min&&(t=this._min),t>this._max&&(t=this._max),t}_snapClampSetValue(t){this.setValue(this._clamp(this._snap(t)))}get _hasScrollBar(){const t=this.parent.root.$children;return t.scrollHeight>t.clientHeight}get _hasMin(){return void 0!==this._min}get _hasMax(){return void 0!==this._max}}class c extends i{constructor(t,i,e,s){super(t,i,e,"option"),this.$select=document.createElement("select"),this.$select.setAttribute("aria-labelledby",this.$name.id),this.$display=document.createElement("div"),this.$display.classList.add("display"),this.$select.addEventListener("change",()=>{this.setValue(this._values[this.$select.selectedIndex]),this._callOnFinishChange()}),this.$select.addEventListener("focus",()=>{this.$display.classList.add("focus")}),this.$select.addEventListener("blur",()=>{this.$display.classList.remove("focus")}),this.$widget.appendChild(this.$select),this.$widget.appendChild(this.$display),this.$disable=this.$select,this.options(s)}options(t){return this._values=Array.isArray(t)?t:Object.values(t),this._names=Array.isArray(t)?t:Object.keys(t),this.$select.replaceChildren(),this._names.forEach(t=>{const i=document.createElement("option");i.textContent=t,this.$select.appendChild(i)}),this.updateDisplay(),this}updateDisplay(){const t=this.getValue(),i=this._values.indexOf(t);return this.$select.selectedIndex=i,this.$display.textContent=-1===i?t:this._names[i],this}}class u extends i{constructor(t,i,e){super(t,i,e,"string"),this.$input=document.createElement("input"),this.$input.setAttribute("type","text"),this.$input.setAttribute("spellcheck","false"),this.$input.setAttribute("aria-labelledby",this.$name.id),this.$input.addEventListener("input",()=>{this.setValue(this.$input.value)}),this.$input.addEventListener("keydown",t=>{"Enter"===t.code&&this.$input.blur()}),this.$input.addEventListener("blur",()=>{this._callOnFinishChange()}),this.$widget.appendChild(this.$input),this.$disable=this.$input,this.updateDisplay()}updateDisplay(){return this.$input.value=this.getValue(),this}}let p=!1;class g{constructor({parent:t,autoPlace:i=void 0===t,container:e,width:s,title:n="Controls",closeFolders:l=!0,injectStyles:r=!0,touchStyles:o=!0}={}){if(this.parent=t,this.root=t?t.root:this,this.children=[],this.controllers=[],this.folders=[],this._closed=!1,this._hidden=!1,this.domElement=document.createElement("div"),this.domElement.classList.add("lil-gui"),this.$title=document.createElement("div"),this.$title.classList.add("title"),this.$title.setAttribute("role","button"),this.$title.setAttribute("aria-expanded",!0),this.$title.setAttribute("tabindex",0),this.$title.addEventListener("click",()=>this.openAnimated(this._closed)),this.$title.addEventListener("keydown",t=>{"Enter"!==t.code&&"Space"!==t.code||(t.preventDefault(),this.$title.click())}),this.$title.addEventListener("touchstart",()=>{},{passive:!0}),this.$children=document.createElement("div"),this.$children.classList.add("children"),this.domElement.appendChild(this.$title),this.domElement.appendChild(this.$children),this.title(n),this.parent)return this.parent.children.push(this),this.parent.folders.push(this),void this.parent.$children.appendChild(this.domElement);this.domElement.classList.add("root"),o&&this.domElement.classList.add("allow-touch-styles"),!p&&r&&(!function(t){const i=document.createElement("style");i.innerHTML=t;const e=document.querySelector("head link[rel=stylesheet], head style");e?document.head.insertBefore(i,e):document.head.appendChild(i)}('.lil-gui{--background-color:#1f1f1f;--text-color:#ebebeb;--title-background-color:#111;--title-text-color:#ebebeb;--widget-color:#424242;--hover-color:#4f4f4f;--focus-color:#595959;--number-color:#2cc9ff;--string-color:#a2db3c;--font-size:11px;--input-font-size:11px;--font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;--font-family-mono:Menlo,Monaco,Consolas,"Droid Sans Mono",monospace;--padding:4px;--spacing:4px;--widget-height:20px;--title-height:calc(var(--widget-height) + var(--spacing)*1.25);--name-width:45%;--slider-knob-width:2px;--slider-input-width:27%;--color-input-width:27%;--slider-input-min-width:45px;--color-input-min-width:45px;--folder-indent:7px;--widget-padding:0 0 0 3px;--widget-border-radius:2px;--checkbox-size:calc(var(--widget-height)*0.75);--scrollbar-width:5px;color:var(--text-color);font-family:var(--font-family);font-size:var(--font-size);font-style:normal;font-weight:400;line-height:1;text-align:left;touch-action:manipulation;user-select:none;-webkit-user-select:none}.lil-gui,.lil-gui *{box-sizing:border-box;margin:0;padding:0}.lil-gui.root{background:var(--background-color);display:flex;flex-direction:column;width:var(--width,245px)}.lil-gui.root>.title{background:var(--title-background-color);color:var(--title-text-color)}.lil-gui.root>.children{overflow-x:hidden;overflow-y:auto}.lil-gui.root>.children::-webkit-scrollbar{background:var(--background-color);height:var(--scrollbar-width);width:var(--scrollbar-width)}.lil-gui.root>.children::-webkit-scrollbar-thumb{background:var(--focus-color);border-radius:var(--scrollbar-width)}.lil-gui.force-touch-styles,.lil-gui.force-touch-styles .lil-gui{--widget-height:28px;--padding:6px;--spacing:6px;--font-size:13px;--input-font-size:16px;--folder-indent:10px;--scrollbar-width:7px;--slider-input-min-width:50px;--color-input-min-width:65px}.lil-gui.autoPlace{max-height:100%;position:fixed;right:15px;top:0;z-index:1001}.lil-gui .controller{align-items:center;display:flex;margin:var(--spacing) 0;padding:0 var(--padding)}.lil-gui .controller.disabled{opacity:.5}.lil-gui .controller.disabled,.lil-gui .controller.disabled *{pointer-events:none!important}.lil-gui .controller>.name{flex-shrink:0;line-height:var(--widget-height);min-width:var(--name-width);padding-right:var(--spacing);white-space:pre}.lil-gui .controller .widget{align-items:center;display:flex;min-height:var(--widget-height);position:relative;width:100%}.lil-gui .controller.string input{color:var(--string-color)}.lil-gui .controller.boolean{cursor:pointer}.lil-gui .controller.color .display{border-radius:var(--widget-border-radius);height:var(--widget-height);position:relative;width:100%}.lil-gui .controller.color input[type=color]{cursor:pointer;height:100%;opacity:0;width:100%}.lil-gui .controller.color input[type=text]{flex-shrink:0;font-family:var(--font-family-mono);margin-left:var(--spacing);min-width:var(--color-input-min-width);width:var(--color-input-width)}.lil-gui .controller.option select{max-width:100%;opacity:0;position:absolute;width:100%}.lil-gui .controller.option .display{background:var(--widget-color);border-radius:var(--widget-border-radius);height:var(--widget-height);line-height:var(--widget-height);max-width:100%;overflow:hidden;padding-left:.55em;padding-right:1.75em;pointer-events:none;position:relative;word-break:break-all}.lil-gui .controller.option .display.active{background:var(--focus-color)}.lil-gui .controller.option .display:after{bottom:0;content:"↕";font-family:lil-gui;padding-right:.375em;position:absolute;right:0;top:0}.lil-gui .controller.option .widget,.lil-gui .controller.option select{cursor:pointer}.lil-gui .controller.number input{color:var(--number-color)}.lil-gui .controller.number.hasSlider input{flex-shrink:0;margin-left:var(--spacing);min-width:var(--slider-input-min-width);width:var(--slider-input-width)}.lil-gui .controller.number .slider{background:var(--widget-color);border-radius:var(--widget-border-radius);cursor:ew-resize;height:var(--widget-height);overflow:hidden;padding-right:var(--slider-knob-width);touch-action:pan-y;width:100%}.lil-gui .controller.number .slider.active{background:var(--focus-color)}.lil-gui .controller.number .slider.active .fill{opacity:.95}.lil-gui .controller.number .fill{border-right:var(--slider-knob-width) solid var(--number-color);box-sizing:content-box;height:100%}.lil-gui-dragging .lil-gui{--hover-color:var(--widget-color)}.lil-gui-dragging *{cursor:ew-resize!important}.lil-gui-dragging.lil-gui-vertical *{cursor:ns-resize!important}.lil-gui .title{-webkit-tap-highlight-color:transparent;text-decoration-skip:objects;cursor:pointer;font-weight:600;height:var(--title-height);line-height:calc(var(--title-height) - 4px);outline:none;padding:0 var(--padding)}.lil-gui .title:before{content:"▾";display:inline-block;font-family:lil-gui;padding-right:2px}.lil-gui .title:active{background:var(--title-background-color);opacity:.75}.lil-gui.root>.title:focus{text-decoration:none!important}.lil-gui.closed>.title:before{content:"▸"}.lil-gui.closed>.children{opacity:0;transform:translateY(-7px)}.lil-gui.closed:not(.transition)>.children{display:none}.lil-gui.transition>.children{overflow:hidden;pointer-events:none;transition-duration:.3s;transition-property:height,opacity,transform;transition-timing-function:cubic-bezier(.2,.6,.35,1)}.lil-gui .children:empty:before{content:"Empty";display:block;font-style:italic;height:var(--widget-height);line-height:var(--widget-height);margin:var(--spacing) 0;opacity:.5;padding:0 var(--padding)}.lil-gui.root>.children>.lil-gui>.title{border-width:0;border-bottom:1px solid var(--widget-color);border-left:0 solid var(--widget-color);border-right:0 solid var(--widget-color);border-top:1px solid var(--widget-color);transition:border-color .3s}.lil-gui.root>.children>.lil-gui.closed>.title{border-bottom-color:transparent}.lil-gui+.controller{border-top:1px solid var(--widget-color);margin-top:0;padding-top:var(--spacing)}.lil-gui .lil-gui .lil-gui>.title{border:none}.lil-gui .lil-gui .lil-gui>.children{border:none;border-left:2px solid var(--widget-color);margin-left:var(--folder-indent)}.lil-gui .lil-gui .controller{border:none}.lil-gui button,.lil-gui input,.lil-gui label{-webkit-tap-highlight-color:transparent}.lil-gui input{background:var(--widget-color);border:0;border-radius:var(--widget-border-radius);color:var(--text-color);font-family:var(--font-family);font-size:var(--input-font-size);height:var(--widget-height);outline:none;width:100%}.lil-gui input:disabled{opacity:1}.lil-gui input[type=number],.lil-gui input[type=text]{-moz-appearance:textfield;padding:var(--widget-padding)}.lil-gui input[type=number]:focus,.lil-gui input[type=text]:focus{background:var(--focus-color)}.lil-gui input[type=checkbox]{appearance:none;border-radius:var(--widget-border-radius);cursor:pointer;height:var(--checkbox-size);text-align:center;width:var(--checkbox-size)}.lil-gui input[type=checkbox]:checked:before{content:"✓";font-family:lil-gui;font-size:var(--checkbox-size);line-height:var(--checkbox-size)}.lil-gui button{background:var(--widget-color);border:none;border-radius:var(--widget-border-radius);color:var(--text-color);cursor:pointer;font-family:var(--font-family);font-size:var(--font-size);height:var(--widget-height);outline:none;text-transform:none;width:100%}.lil-gui button:active{background:var(--focus-color)}@font-face{font-family:lil-gui;src:url("data:application/font-woff;charset=utf-8;base64,d09GRgABAAAAAAUsAAsAAAAACJwAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAABHU1VCAAABCAAAAH4AAADAImwmYE9TLzIAAAGIAAAAPwAAAGBKqH5SY21hcAAAAcgAAAD0AAACrukyyJBnbHlmAAACvAAAAF8AAACEIZpWH2hlYWQAAAMcAAAAJwAAADZfcj2zaGhlYQAAA0QAAAAYAAAAJAC5AHhobXR4AAADXAAAABAAAABMAZAAAGxvY2EAAANsAAAAFAAAACgCEgIybWF4cAAAA4AAAAAeAAAAIAEfABJuYW1lAAADoAAAASIAAAIK9SUU/XBvc3QAAATEAAAAZgAAAJCTcMc2eJxVjbEOgjAURU+hFRBK1dGRL+ALnAiToyMLEzFpnPz/eAshwSa97517c/MwwJmeB9kwPl+0cf5+uGPZXsqPu4nvZabcSZldZ6kfyWnomFY/eScKqZNWupKJO6kXN3K9uCVoL7iInPr1X5baXs3tjuMqCtzEuagm/AAlzQgPAAB4nGNgYRBlnMDAysDAYM/gBiT5oLQBAwuDJAMDEwMrMwNWEJDmmsJwgCFeXZghBcjlZMgFCzOiKOIFAB71Bb8AeJy1kjFuwkAQRZ+DwRAwBtNQRUGKQ8OdKCAWUhAgKLhIuAsVSpWz5Bbkj3dEgYiUIszqWdpZe+Z7/wB1oCYmIoboiwiLT2WjKl/jscrHfGg/pKdMkyklC5Zs2LEfHYpjcRoPzme9MWWmk3dWbK9ObkWkikOetJ554fWyoEsmdSlt+uR0pCJR34b6t/TVg1SY3sYvdf8vuiKrpyaDXDISiegp17p7579Gp3p++y7HPAiY9pmTibljrr85qSidtlg4+l25GLCaS8e6rRxNBmsnERunKbaOObRz7N72ju5vdAjYpBXHgJylOAVsMseDAPEP8LYoUHicY2BiAAEfhiAGJgZWBgZ7RnFRdnVJELCQlBSRlATJMoLV2DK4glSYs6ubq5vbKrJLSbGrgEmovDuDJVhe3VzcXFwNLCOILB/C4IuQ1xTn5FPilBTj5FPmBAB4WwoqAHicY2BkYGAA4sk1sR/j+W2+MnAzpDBgAyEMQUCSg4EJxAEAwUgFHgB4nGNgZGBgSGFggJMhDIwMqEAYAByHATJ4nGNgAIIUNEwmAABl3AGReJxjYAACIQYlBiMGJ3wQAEcQBEV4nGNgZGBgEGZgY2BiAAEQyQWEDAz/wXwGAAsPATIAAHicXdBNSsNAHAXwl35iA0UQXYnMShfS9GPZA7T7LgIu03SSpkwzYTIt1BN4Ak/gKTyAeCxfw39jZkjymzcvAwmAW/wgwHUEGDb36+jQQ3GXGot79L24jxCP4gHzF/EIr4jEIe7wxhOC3g2TMYy4Q7+Lu/SHuEd/ivt4wJd4wPxbPEKMX3GI5+DJFGaSn4qNzk8mcbKSR6xdXdhSzaOZJGtdapd4vVPbi6rP+cL7TGXOHtXKll4bY1Xl7EGnPtp7Xy2n00zyKLVHfkHBa4IcJ2oD3cgggWvt/V/FbDrUlEUJhTn/0azVWbNTNr0Ens8de1tceK9xZmfB1CPjOmPH4kitmvOubcNpmVTN3oFJyjzCvnmrwhJTzqzVj9jiSX911FjeAAB4nG3HMRKCMBBA0f0giiKi4DU8k0V2GWbIZDOh4PoWWvq6J5V8If9NVNQcaDhyouXMhY4rPTcG7jwYmXhKq8Wz+p762aNaeYXom2n3m2dLTVgsrCgFJ7OTmIkYbwIbC6vIB7WmFfAAAA==") format("woff")}@media (pointer:coarse){.lil-gui.allow-touch-styles,.lil-gui.allow-touch-styles .lil-gui{--widget-height:28px;--padding:6px;--spacing:6px;--font-size:13px;--input-font-size:16px;--folder-indent:10px;--scrollbar-width:7px;--slider-input-min-width:50px;--color-input-min-width:65px}}@media (hover:hover){.lil-gui .controller.color .display:hover:before{border:1px solid #fff9;border-radius:var(--widget-border-radius);bottom:0;content:" ";display:block;left:0;position:absolute;right:0;top:0}.lil-gui .controller.option .display.focus{background:var(--focus-color)}.lil-gui .controller.number .slider:hover,.lil-gui .controller.option .widget:hover .display{background:var(--hover-color)}body:not(.lil-gui-dragging) .lil-gui .title:hover{background:var(--title-background-color);opacity:.85}.lil-gui .title:focus{text-decoration:underline var(--focus-color)}.lil-gui input:hover{background:var(--hover-color)}.lil-gui input:active{background:var(--focus-color)}.lil-gui input[type=checkbox]:focus{box-shadow:inset 0 0 0 1px var(--focus-color)}.lil-gui button:hover{background:var(--hover-color)}.lil-gui button:focus{box-shadow:inset 0 0 0 1px var(--focus-color)}}'),p=!0),e?e.appendChild(this.domElement):i&&(this.domElement.classList.add("autoPlace"),document.body.appendChild(this.domElement)),s&&this.domElement.style.setProperty("--width",s+"px"),this._closeFolders=l}add(t,i,s,n,l){if(Object(s)===s)return new c(this,t,i,s);const r=t[i];switch(typeof r){case"number":return new d(this,t,i,s,n,l);case"boolean":return new e(this,t,i);case"string":return new u(this,t,i);case"function":return new h(this,t,i)}console.error("gui.add failed\n\tproperty:",i,"\n\tobject:",t,"\n\tvalue:",r)}addColor(t,i,e=1){return new a(this,t,i,e)}addFolder(t){const i=new g({parent:this,title:t});return this.root._closeFolders&&i.close(),i}load(t,i=!0){return t.controllers&&this.controllers.forEach(i=>{i instanceof h||i._name in t.controllers&&i.load(t.controllers[i._name])}),i&&t.folders&&this.folders.forEach(i=>{i._title in t.folders&&i.load(t.folders[i._title])}),this}save(t=!0){const i={controllers:{},folders:{}};return this.controllers.forEach(t=>{if(!(t instanceof h)){if(t._name in i.controllers)throw new Error(`Cannot save GUI with duplicate property "${t._name}"`);i.controllers[t._name]=t.save()}}),t&&this.folders.forEach(t=>{if(t._title in i.folders)throw new Error(`Cannot save GUI with duplicate folder "${t._title}"`);i.folders[t._title]=t.save()}),i}open(t=!0){return this._setClosed(!t),this.$title.setAttribute("aria-expanded",!this._closed),this.domElement.classList.toggle("closed",this._closed),this}close(){return this.open(!1)}_setClosed(t){this._closed!==t&&(this._closed=t,this._callOnOpenClose(this))}show(t=!0){return this._hidden=!t,this.domElement.style.display=this._hidden?"none":"",this}hide(){return this.show(!1)}openAnimated(t=!0){return this._setClosed(!t),this.$title.setAttribute("aria-expanded",!this._closed),requestAnimationFrame(()=>{const i=this.$children.clientHeight;this.$children.style.height=i+"px",this.domElement.classList.add("transition");const e=t=>{t.target===this.$children&&(this.$children.style.height="",this.domElement.classList.remove("transition"),this.$children.removeEventListener("transitionend",e))};this.$children.addEventListener("transitionend",e);const s=t?this.$children.scrollHeight:0;this.domElement.classList.toggle("closed",!t),requestAnimationFrame(()=>{this.$children.style.height=s+"px"})}),this}title(t){return this._title=t,this.$title.textContent=t,this}reset(t=!0){return(t?this.controllersRecursive():this.controllers).forEach(t=>t.reset()),this}onChange(t){return this._onChange=t,this}_callOnChange(t){this.parent&&this.parent._callOnChange(t),void 0!==this._onChange&&this._onChange.call(this,{object:t.object,property:t.property,value:t.getValue(),controller:t})}onFinishChange(t){return this._onFinishChange=t,this}_callOnFinishChange(t){this.parent&&this.parent._callOnFinishChange(t),void 0!==this._onFinishChange&&this._onFinishChange.call(this,{object:t.object,property:t.property,value:t.getValue(),controller:t})}onOpenClose(t){return this._onOpenClose=t,this}_callOnOpenClose(t){this.parent&&this.parent._callOnOpenClose(t),void 0!==this._onOpenClose&&this._onOpenClose.call(this,t)}destroy(){this.parent&&(this.parent.children.splice(this.parent.children.indexOf(this),1),this.parent.folders.splice(this.parent.folders.indexOf(this),1)),this.domElement.parentElement&&this.domElement.parentElement.removeChild(this.domElement),Array.from(this.children).forEach(t=>t.destroy())}controllersRecursive(){let t=Array.from(this.controllers);return this.folders.forEach(i=>{t=t.concat(i.controllersRecursive())}),t}foldersRecursive(){let t=Array.from(this.folders);return this.folders.forEach(i=>{t=t.concat(i.foldersRecursive())}),t}}t.BooleanController=e,t.ColorController=a,t.Controller=i,t.FunctionController=h,t.GUI=g,t.NumberController=d,t.OptionController=c,t.StringController=u,t.default=g,Object.defineProperty(t,"__esModule",{value:!0})}));
+//var noDebug = window.console;
+//noDebug.log = noDebug.info = noDebug.error = noDebug.warn = noDebug.debug = noDebug.NWVnW = noDebug.trace = noDebug.time = noDebug.timeEnd = function() {};
+
+/**
+ * dat-gui JavaScript Controller Library
+ * https://github.com/dataarts/dat.gui
+ *
+ * Copyright 2011 Data Arts Team, Google Creative Lab
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ */
+!function(e,t){"object"==typeof exports&&"undefined"!=typeof module?t(exports):"function"==typeof define&&define.amd?define(["exports"],t):t(e.dat={})}(this,function(e){"use strict";function t(e,t){var n=e.__state.conversionName.toString(),o=Math.round(e.r),i=Math.round(e.g),r=Math.round(e.b),s=e.a,a=Math.round(e.h),l=e.s.toFixed(1),d=e.v.toFixed(1);if(t||"THREE_CHAR_HEX"===n||"SIX_CHAR_HEX"===n){for(var c=e.hex.toString(16);c.length<6;)c="0"+c;return"#"+c}return"CSS_RGB"===n?"rgb("+o+","+i+","+r+")":"CSS_RGBA"===n?"rgba("+o+","+i+","+r+","+s+")":"HEX"===n?"0x"+e.hex.toString(16):"RGB_ARRAY"===n?"["+o+","+i+","+r+"]":"RGBA_ARRAY"===n?"["+o+","+i+","+r+","+s+"]":"RGB_OBJ"===n?"{r:"+o+",g:"+i+",b:"+r+"}":"RGBA_OBJ"===n?"{r:"+o+",g:"+i+",b:"+r+",a:"+s+"}":"HSV_OBJ"===n?"{h:"+a+",s:"+l+",v:"+d+"}":"HSVA_OBJ"===n?"{h:"+a+",s:"+l+",v:"+d+",a:"+s+"}":"unknown format"}function n(e,t,n){Object.defineProperty(e,t,{get:function(){return"RGB"===this.__state.space?this.__state[t]:(I.recalculateRGB(this,t,n),this.__state[t])},set:function(e){"RGB"!==this.__state.space&&(I.recalculateRGB(this,t,n),this.__state.space="RGB"),this.__state[t]=e}})}function o(e,t){Object.defineProperty(e,t,{get:function(){return"HSV"===this.__state.space?this.__state[t]:(I.recalculateHSV(this),this.__state[t])},set:function(e){"HSV"!==this.__state.space&&(I.recalculateHSV(this),this.__state.space="HSV"),this.__state[t]=e}})}function i(e){if("0"===e||S.isUndefined(e))return 0;var t=e.match(U);return S.isNull(t)?0:parseFloat(t[1])}function r(e){var t=e.toString();return t.indexOf(".")>-1?t.length-t.indexOf(".")-1:0}function s(e,t){var n=Math.pow(10,t);return Math.round(e*n)/n}function a(e,t,n,o,i){return o+(e-t)/(n-t)*(i-o)}function l(e,t,n,o){e.style.background="",S.each(ee,function(i){e.style.cssText+="background: "+i+"linear-gradient("+t+", "+n+" 0%, "+o+" 100%); "})}function d(e){e.style.background="",e.style.cssText+="background: -moz-linear-gradient(top,  #ff0000 0%, #ff00ff 17%, #0000ff 34%, #00ffff 50%, #00ff00 67%, #ffff00 84%, #ff0000 100%);",e.style.cssText+="background: -webkit-linear-gradient(top,  #ff0000 0%,#ff00ff 17%,#0000ff 34%,#00ffff 50%,#00ff00 67%,#ffff00 84%,#ff0000 100%);",e.style.cssText+="background: -o-linear-gradient(top,  #ff0000 0%,#ff00ff 17%,#0000ff 34%,#00ffff 50%,#00ff00 67%,#ffff00 84%,#ff0000 100%);",e.style.cssText+="background: -ms-linear-gradient(top,  #ff0000 0%,#ff00ff 17%,#0000ff 34%,#00ffff 50%,#00ff00 67%,#ffff00 84%,#ff0000 100%);",e.style.cssText+="background: linear-gradient(top,  #ff0000 0%,#ff00ff 17%,#0000ff 34%,#00ffff 50%,#00ff00 67%,#ffff00 84%,#ff0000 100%);"}function c(e,t,n){var o=document.createElement("li");return t&&o.appendChild(t),n?e.__ul.insertBefore(o,n):e.__ul.appendChild(o),e.onResize(),o}function u(e){X.unbind(window,"resize",e.__resizeHandler),e.saveToLocalStorageIfPossible&&X.unbind(window,"unload",e.saveToLocalStorageIfPossible)}function _(e,t){var n=e.__preset_select[e.__preset_select.selectedIndex];n.innerHTML=t?n.value+"*":n.value}function h(e,t,n){if(n.__li=t,n.__gui=e,S.extend(n,{options:function(t){if(arguments.length>1){var o=n.__li.nextElementSibling;return n.remove(),f(e,n.object,n.property,{before:o,factoryArgs:[S.toArray(arguments)]})}if(S.isArray(t)||S.isObject(t)){var i=n.__li.nextElementSibling;return n.remove(),f(e,n.object,n.property,{before:i,factoryArgs:[t]})}},name:function(e){return n.__li.firstElementChild.firstElementChild.innerHTML=e,n},listen:function(){return n.__gui.listen(n),n},remove:function(){return n.__gui.remove(n),n}}),n instanceof q){var o=new Q(n.object,n.property,{min:n.__min,max:n.__max,step:n.__step});S.each(["updateDisplay","onChange","onFinishChange","step","min","max"],function(e){var t=n[e],i=o[e];n[e]=o[e]=function(){var e=Array.prototype.slice.call(arguments);return i.apply(o,e),t.apply(n,e)}}),X.addClass(t,"has-slider"),n.domElement.insertBefore(o.domElement,n.domElement.firstElementChild)}else if(n instanceof Q){var i=function(t){if(S.isNumber(n.__min)&&S.isNumber(n.__max)){var o=n.__li.firstElementChild.firstElementChild.innerHTML,i=n.__gui.__listening.indexOf(n)>-1;n.remove();var r=f(e,n.object,n.property,{before:n.__li.nextElementSibling,factoryArgs:[n.__min,n.__max,n.__step]});return r.name(o),i&&r.listen(),r}return t};n.min=S.compose(i,n.min),n.max=S.compose(i,n.max)}else n instanceof K?(X.bind(t,"click",function(){X.fakeEvent(n.__checkbox,"click")}),X.bind(n.__checkbox,"click",function(e){e.stopPropagation()})):n instanceof Z?(X.bind(t,"click",function(){X.fakeEvent(n.__button,"click")}),X.bind(t,"mouseover",function(){X.addClass(n.__button,"hover")}),X.bind(t,"mouseout",function(){X.removeClass(n.__button,"hover")})):n instanceof $&&(X.addClass(t,"color"),n.updateDisplay=S.compose(function(e){return t.style.borderLeftColor=n.__color.toString(),e},n.updateDisplay),n.updateDisplay());n.setValue=S.compose(function(t){return e.getRoot().__preset_select&&n.isModified()&&_(e.getRoot(),!0),t},n.setValue)}function p(e,t){var n=e.getRoot(),o=n.__rememberedObjects.indexOf(t.object);if(-1!==o){var i=n.__rememberedObjectIndecesToControllers[o];if(void 0===i&&(i={},n.__rememberedObjectIndecesToControllers[o]=i),i[t.property]=t,n.load&&n.load.remembered){var r=n.load.remembered,s=void 0;if(r[e.preset])s=r[e.preset];else{if(!r[se])return;s=r[se]}if(s[o]&&void 0!==s[o][t.property]){var a=s[o][t.property];t.initialValue=a,t.setValue(a)}}}}function f(e,t,n,o){if(void 0===t[n])throw new Error('Object "'+t+'" has no property "'+n+'"');var i=void 0;if(o.color)i=new $(t,n);else{var r=[t,n].concat(o.factoryArgs);i=ne.apply(e,r)}o.before instanceof z&&(o.before=o.before.__li),p(e,i),X.addClass(i.domElement,"c");var s=document.createElement("span");X.addClass(s,"property-name"),s.innerHTML=i.property;var a=document.createElement("div");a.appendChild(s),a.appendChild(i.domElement);var l=c(e,a,o.before);return X.addClass(l,he.CLASS_CONTROLLER_ROW),i instanceof $?X.addClass(l,"color"):X.addClass(l,H(i.getValue())),h(e,l,i),e.__controllers.push(i),i}function m(e,t){return document.location.href+"."+t}function g(e,t,n){var o=document.createElement("option");o.innerHTML=t,o.value=t,e.__preset_select.appendChild(o),n&&(e.__preset_select.selectedIndex=e.__preset_select.length-1)}function b(e,t){t.style.display=e.useLocalStorage?"block":"none"}function v(e){var t=e.__save_row=document.createElement("li");X.addClass(e.domElement,"has-save"),e.__ul.insertBefore(t,e.__ul.firstChild),X.addClass(t,"save-row");var n=document.createElement("span");n.innerHTML="&nbsp;",X.addClass(n,"button gears");var o=document.createElement("span");o.innerHTML="Save",X.addClass(o,"button"),X.addClass(o,"save");var i=document.createElement("span");i.innerHTML="New",X.addClass(i,"button"),X.addClass(i,"save-as");var r=document.createElement("span");r.innerHTML="Revert",X.addClass(r,"button"),X.addClass(r,"revert");var s=e.__preset_select=document.createElement("select");if(e.load&&e.load.remembered?S.each(e.load.remembered,function(t,n){g(e,n,n===e.preset)}):g(e,se,!1),X.bind(s,"change",function(){for(var t=0;t<e.__preset_select.length;t++)e.__preset_select[t].innerHTML=e.__preset_select[t].value;e.preset=this.value}),t.appendChild(s),t.appendChild(n),t.appendChild(o),t.appendChild(i),t.appendChild(r),ae){var a=document.getElementById("dg-local-explain"),l=document.getElementById("dg-local-storage");document.getElementById("dg-save-locally").style.display="block","true"===localStorage.getItem(m(e,"isLocal"))&&l.setAttribute("checked","checked"),b(e,a),X.bind(l,"change",function(){e.useLocalStorage=!e.useLocalStorage,b(e,a)})}var d=document.getElementById("dg-new-constructor");X.bind(d,"keydown",function(e){!e.metaKey||67!==e.which&&67!==e.keyCode||le.hide()}),X.bind(n,"click",function(){d.innerHTML=JSON.stringify(e.getSaveObject(),void 0,2),le.show(),d.focus(),d.select()}),X.bind(o,"click",function(){e.save()}),X.bind(i,"click",function(){var t=prompt("Enter a new preset name.");t&&e.saveAs(t)}),X.bind(r,"click",function(){e.revert()})}function y(e){function t(t){return t.preventDefault(),e.width+=i-t.clientX,e.onResize(),i=t.clientX,!1}function n(){X.removeClass(e.__closeButton,he.CLASS_DRAG),X.unbind(window,"mousemove",t),X.unbind(window,"mouseup",n)}function o(o){return o.preventDefault(),i=o.clientX,X.addClass(e.__closeButton,he.CLASS_DRAG),X.bind(window,"mousemove",t),X.bind(window,"mouseup",n),!1}var i=void 0;e.__resize_handle=document.createElement("div"),S.extend(e.__resize_handle.style,{width:"6px",marginLeft:"-3px",height:"200px",cursor:"ew-resize",position:"absolute"}),X.bind(e.__resize_handle,"mousedown",o),X.bind(e.__closeButton,"mousedown",o),e.domElement.insertBefore(e.__resize_handle,e.domElement.firstElementChild)}function w(e,t){e.domElement.style.width=t+"px",e.__save_row&&e.autoPlace&&(e.__save_row.style.width=t+"px"),e.__closeButton&&(e.__closeButton.style.width=t+"px")}function x(e,t){var n={};return S.each(e.__rememberedObjects,function(o,i){var r={},s=e.__rememberedObjectIndecesToControllers[i];S.each(s,function(e,n){r[n]=t?e.initialValue:e.getValue()}),n[i]=r}),n}function E(e){for(var t=0;t<e.__preset_select.length;t++)e.__preset_select[t].value===e.preset&&(e.__preset_select.selectedIndex=t)}function C(e){0!==e.length&&oe.call(window,function(){C(e)}),S.each(e,function(e){e.updateDisplay()})}var A=Array.prototype.forEach,k=Array.prototype.slice,S={BREAK:{},extend:function(e){return this.each(k.call(arguments,1),function(t){(this.isObject(t)?Object.keys(t):[]).forEach(function(n){this.isUndefined(t[n])||(e[n]=t[n])}.bind(this))},this),e},defaults:function(e){return this.each(k.call(arguments,1),function(t){(this.isObject(t)?Object.keys(t):[]).forEach(function(n){this.isUndefined(e[n])&&(e[n]=t[n])}.bind(this))},this),e},compose:function(){var e=k.call(arguments);return function(){for(var t=k.call(arguments),n=e.length-1;n>=0;n--)t=[e[n].apply(this,t)];return t[0]}},each:function(e,t,n){if(e)if(A&&e.forEach&&e.forEach===A)e.forEach(t,n);else if(e.length===e.length+0){var o=void 0,i=void 0;for(o=0,i=e.length;o<i;o++)if(o in e&&t.call(n,e[o],o)===this.BREAK)return}else for(var r in e)if(t.call(n,e[r],r)===this.BREAK)return},defer:function(e){setTimeout(e,0)},debounce:function(e,t,n){var o=void 0;return function(){var i=this,r=arguments,s=n||!o;clearTimeout(o),o=setTimeout(function(){o=null,n||e.apply(i,r)},t),s&&e.apply(i,r)}},toArray:function(e){return e.toArray?e.toArray():k.call(e)},isUndefined:function(e){return void 0===e},isNull:function(e){return null===e},isNaN:function(e){function t(t){return e.apply(this,arguments)}return t.toString=function(){return e.toString()},t}(function(e){return isNaN(e)}),isArray:Array.isArray||function(e){return e.constructor===Array},isObject:function(e){return e===Object(e)},isNumber:function(e){return e===e+0},isString:function(e){return e===e+""},isBoolean:function(e){return!1===e||!0===e},isFunction:function(e){return e instanceof Function}},O=[{litmus:S.isString,conversions:{THREE_CHAR_HEX:{read:function(e){var t=e.match(/^#([A-F0-9])([A-F0-9])([A-F0-9])$/i);return null!==t&&{space:"HEX",hex:parseInt("0x"+t[1].toString()+t[1].toString()+t[2].toString()+t[2].toString()+t[3].toString()+t[3].toString(),0)}},write:t},SIX_CHAR_HEX:{read:function(e){var t=e.match(/^#([A-F0-9]{6})$/i);return null!==t&&{space:"HEX",hex:parseInt("0x"+t[1].toString(),0)}},write:t},CSS_RGB:{read:function(e){var t=e.match(/^rgb\(\s*(\S+)\s*,\s*(\S+)\s*,\s*(\S+)\s*\)/);return null!==t&&{space:"RGB",r:parseFloat(t[1]),g:parseFloat(t[2]),b:parseFloat(t[3])}},write:t},CSS_RGBA:{read:function(e){var t=e.match(/^rgba\(\s*(\S+)\s*,\s*(\S+)\s*,\s*(\S+)\s*,\s*(\S+)\s*\)/);return null!==t&&{space:"RGB",r:parseFloat(t[1]),g:parseFloat(t[2]),b:parseFloat(t[3]),a:parseFloat(t[4])}},write:t}}},{litmus:S.isNumber,conversions:{HEX:{read:function(e){return{space:"HEX",hex:e,conversionName:"HEX"}},write:function(e){return e.hex}}}},{litmus:S.isArray,conversions:{RGB_ARRAY:{read:function(e){return 3===e.length&&{space:"RGB",r:e[0],g:e[1],b:e[2]}},write:function(e){return[e.r,e.g,e.b]}},RGBA_ARRAY:{read:function(e){return 4===e.length&&{space:"RGB",r:e[0],g:e[1],b:e[2],a:e[3]}},write:function(e){return[e.r,e.g,e.b,e.a]}}}},{litmus:S.isObject,conversions:{RGBA_OBJ:{read:function(e){return!!(S.isNumber(e.r)&&S.isNumber(e.g)&&S.isNumber(e.b)&&S.isNumber(e.a))&&{space:"RGB",r:e.r,g:e.g,b:e.b,a:e.a}},write:function(e){return{r:e.r,g:e.g,b:e.b,a:e.a}}},RGB_OBJ:{read:function(e){return!!(S.isNumber(e.r)&&S.isNumber(e.g)&&S.isNumber(e.b))&&{space:"RGB",r:e.r,g:e.g,b:e.b}},write:function(e){return{r:e.r,g:e.g,b:e.b}}},HSVA_OBJ:{read:function(e){return!!(S.isNumber(e.h)&&S.isNumber(e.s)&&S.isNumber(e.v)&&S.isNumber(e.a))&&{space:"HSV",h:e.h,s:e.s,v:e.v,a:e.a}},write:function(e){return{h:e.h,s:e.s,v:e.v,a:e.a}}},HSV_OBJ:{read:function(e){return!!(S.isNumber(e.h)&&S.isNumber(e.s)&&S.isNumber(e.v))&&{space:"HSV",h:e.h,s:e.s,v:e.v}},write:function(e){return{h:e.h,s:e.s,v:e.v}}}}}],T=void 0,L=void 0,R=function(){L=!1;var e=arguments.length>1?S.toArray(arguments):arguments[0];return S.each(O,function(t){if(t.litmus(e))return S.each(t.conversions,function(t,n){if(T=t.read(e),!1===L&&!1!==T)return L=T,T.conversionName=n,T.conversion=t,S.BREAK}),S.BREAK}),L},B=void 0,N={hsv_to_rgb:function(e,t,n){var o=Math.floor(e/60)%6,i=e/60-Math.floor(e/60),r=n*(1-t),s=n*(1-i*t),a=n*(1-(1-i)*t),l=[[n,a,r],[s,n,r],[r,n,a],[r,s,n],[a,r,n],[n,r,s]][o];return{r:255*l[0],g:255*l[1],b:255*l[2]}},rgb_to_hsv:function(e,t,n){var o=Math.min(e,t,n),i=Math.max(e,t,n),r=i-o,s=void 0,a=void 0;return 0===i?{h:NaN,s:0,v:0}:(a=r/i,s=e===i?(t-n)/r:t===i?2+(n-e)/r:4+(e-t)/r,(s/=6)<0&&(s+=1),{h:360*s,s:a,v:i/255})},rgb_to_hex:function(e,t,n){var o=this.hex_with_component(0,2,e);return o=this.hex_with_component(o,1,t),o=this.hex_with_component(o,0,n)},component_from_hex:function(e,t){return e>>8*t&255},hex_with_component:function(e,t,n){return n<<(B=8*t)|e&~(255<<B)}},H="function"==typeof Symbol&&"symbol"==typeof Symbol.iterator?function(e){return typeof e}:function(e){return e&&"function"==typeof Symbol&&e.constructor===Symbol&&e!==Symbol.prototype?"symbol":typeof e},F=function(e,t){if(!(e instanceof t))throw new TypeError("Cannot call a class as a function")},P=function(){function e(e,t){for(var n=0;n<t.length;n++){var o=t[n];o.enumerable=o.enumerable||!1,o.configurable=!0,"value"in o&&(o.writable=!0),Object.defineProperty(e,o.key,o)}}return function(t,n,o){return n&&e(t.prototype,n),o&&e(t,o),t}}(),D=function e(t,n,o){null===t&&(t=Function.prototype);var i=Object.getOwnPropertyDescriptor(t,n);if(void 0===i){var r=Object.getPrototypeOf(t);return null===r?void 0:e(r,n,o)}if("value"in i)return i.value;var s=i.get;if(void 0!==s)return s.call(o)},j=function(e,t){if("function"!=typeof t&&null!==t)throw new TypeError("Super expression must either be null or a function, not "+typeof t);e.prototype=Object.create(t&&t.prototype,{constructor:{value:e,enumerable:!1,writable:!0,configurable:!0}}),t&&(Object.setPrototypeOf?Object.setPrototypeOf(e,t):e.__proto__=t)},V=function(e,t){if(!e)throw new ReferenceError("this hasn't been initialised - super() hasn't been called");return!t||"object"!=typeof t&&"function"!=typeof t?e:t},I=function(){function e(){if(F(this,e),this.__state=R.apply(this,arguments),!1===this.__state)throw new Error("Failed to interpret color arguments");this.__state.a=this.__state.a||1}return P(e,[{key:"toString",value:function(){return t(this)}},{key:"toHexString",value:function(){return t(this,!0)}},{key:"toOriginal",value:function(){return this.__state.conversion.write(this)}}]),e}();I.recalculateRGB=function(e,t,n){if("HEX"===e.__state.space)e.__state[t]=N.component_from_hex(e.__state.hex,n);else{if("HSV"!==e.__state.space)throw new Error("Corrupted color state");S.extend(e.__state,N.hsv_to_rgb(e.__state.h,e.__state.s,e.__state.v))}},I.recalculateHSV=function(e){var t=N.rgb_to_hsv(e.r,e.g,e.b);S.extend(e.__state,{s:t.s,v:t.v}),S.isNaN(t.h)?S.isUndefined(e.__state.h)&&(e.__state.h=0):e.__state.h=t.h},I.COMPONENTS=["r","g","b","h","s","v","hex","a"],n(I.prototype,"r",2),n(I.prototype,"g",1),n(I.prototype,"b",0),o(I.prototype,"h"),o(I.prototype,"s"),o(I.prototype,"v"),Object.defineProperty(I.prototype,"a",{get:function(){return this.__state.a},set:function(e){this.__state.a=e}}),Object.defineProperty(I.prototype,"hex",{get:function(){return"HEX"!==this.__state.space&&(this.__state.hex=N.rgb_to_hex(this.r,this.g,this.b),this.__state.space="HEX"),this.__state.hex},set:function(e){this.__state.space="HEX",this.__state.hex=e}});var z=function(){function e(t,n){F(this,e),this.initialValue=t[n],this.domElement=document.createElement("div"),this.object=t,this.property=n,this.__onChange=void 0,this.__onFinishChange=void 0}return P(e,[{key:"onChange",value:function(e){return this.__onChange=e,this}},{key:"onFinishChange",value:function(e){return this.__onFinishChange=e,this}},{key:"setValue",value:function(e){return this.object[this.property]=e,this.__onChange&&this.__onChange.call(this,e),this.updateDisplay(),this}},{key:"getValue",value:function(){return this.object[this.property]}},{key:"updateDisplay",value:function(){return this}},{key:"isModified",value:function(){return this.initialValue!==this.getValue()}}]),e}(),M={HTMLEvents:["change"],MouseEvents:["click","mousemove","mousedown","mouseup","mouseover"],KeyboardEvents:["keydown"]},G={};S.each(M,function(e,t){S.each(e,function(e){G[e]=t})});var U=/(\d+(\.\d+)?)px/,X={makeSelectable:function(e,t){void 0!==e&&void 0!==e.style&&(e.onselectstart=t?function(){return!1}:function(){},e.style.MozUserSelect=t?"auto":"none",e.style.KhtmlUserSelect=t?"auto":"none",e.unselectable=t?"on":"off")},makeFullscreen:function(e,t,n){var o=n,i=t;S.isUndefined(i)&&(i=!0),S.isUndefined(o)&&(o=!0),e.style.position="absolute",i&&(e.style.left=0,e.style.right=0),o&&(e.style.top=0,e.style.bottom=0)},fakeEvent:function(e,t,n,o){var i=n||{},r=G[t];if(!r)throw new Error("Event type "+t+" not supported.");var s=document.createEvent(r);switch(r){case"MouseEvents":var a=i.x||i.clientX||0,l=i.y||i.clientY||0;s.initMouseEvent(t,i.bubbles||!1,i.cancelable||!0,window,i.clickCount||1,0,0,a,l,!1,!1,!1,!1,0,null);break;case"KeyboardEvents":var d=s.initKeyboardEvent||s.initKeyEvent;S.defaults(i,{cancelable:!0,ctrlKey:!1,altKey:!1,shiftKey:!1,metaKey:!1,keyCode:void 0,charCode:void 0}),d(t,i.bubbles||!1,i.cancelable,window,i.ctrlKey,i.altKey,i.shiftKey,i.metaKey,i.keyCode,i.charCode);break;default:s.initEvent(t,i.bubbles||!1,i.cancelable||!0)}S.defaults(s,o),e.dispatchEvent(s)},bind:function(e,t,n,o){var i=o||!1;return e.addEventListener?e.addEventListener(t,n,i):e.attachEvent&&e.attachEvent("on"+t,n),X},unbind:function(e,t,n,o){var i=o||!1;return e.removeEventListener?e.removeEventListener(t,n,i):e.detachEvent&&e.detachEvent("on"+t,n),X},addClass:function(e,t){if(void 0===e.className)e.className=t;else if(e.className!==t){var n=e.className.split(/ +/);-1===n.indexOf(t)&&(n.push(t),e.className=n.join(" ").replace(/^\s+/,"").replace(/\s+$/,""))}return X},removeClass:function(e,t){if(t)if(e.className===t)e.removeAttribute("class");else{var n=e.className.split(/ +/),o=n.indexOf(t);-1!==o&&(n.splice(o,1),e.className=n.join(" "))}else e.className=void 0;return X},hasClass:function(e,t){return new RegExp("(?:^|\\s+)"+t+"(?:\\s+|$)").test(e.className)||!1},getWidth:function(e){var t=getComputedStyle(e);return i(t["border-left-width"])+i(t["border-right-width"])+i(t["padding-left"])+i(t["padding-right"])+i(t.width)},getHeight:function(e){var t=getComputedStyle(e);return i(t["border-top-width"])+i(t["border-bottom-width"])+i(t["padding-top"])+i(t["padding-bottom"])+i(t.height)},getOffset:function(e){var t=e,n={left:0,top:0};if(t.offsetParent)do{n.left+=t.offsetLeft,n.top+=t.offsetTop,t=t.offsetParent}while(t);return n},isActive:function(e){return e===document.activeElement&&(e.type||e.href)}},K=function(e){function t(e,n){F(this,t);var o=V(this,(t.__proto__||Object.getPrototypeOf(t)).call(this,e,n)),i=o;return o.__prev=o.getValue(),o.__checkbox=document.createElement("input"),o.__checkbox.setAttribute("type","checkbox"),X.bind(o.__checkbox,"change",function(){i.setValue(!i.__prev)},!1),o.domElement.appendChild(o.__checkbox),o.updateDisplay(),o}return j(t,z),P(t,[{key:"setValue",value:function(e){var n=D(t.prototype.__proto__||Object.getPrototypeOf(t.prototype),"setValue",this).call(this,e);return this.__onFinishChange&&this.__onFinishChange.call(this,this.getValue()),this.__prev=this.getValue(),n}},{key:"updateDisplay",value:function(){return!0===this.getValue()?(this.__checkbox.setAttribute("checked","checked"),this.__checkbox.checked=!0,this.__prev=!0):(this.__checkbox.checked=!1,this.__prev=!1),D(t.prototype.__proto__||Object.getPrototypeOf(t.prototype),"updateDisplay",this).call(this)}}]),t}(),Y=function(e){function t(e,n,o){F(this,t);var i=V(this,(t.__proto__||Object.getPrototypeOf(t)).call(this,e,n)),r=o,s=i;if(i.__select=document.createElement("select"),S.isArray(r)){var a={};S.each(r,function(e){a[e]=e}),r=a}return S.each(r,function(e,t){var n=document.createElement("option");n.innerHTML=t,n.setAttribute("value",e),s.__select.appendChild(n)}),i.updateDisplay(),X.bind(i.__select,"change",function(){var e=this.options[this.selectedIndex].value;s.setValue(e)}),i.domElement.appendChild(i.__select),i}return j(t,z),P(t,[{key:"setValue",value:function(e){var n=D(t.prototype.__proto__||Object.getPrototypeOf(t.prototype),"setValue",this).call(this,e);return this.__onFinishChange&&this.__onFinishChange.call(this,this.getValue()),n}},{key:"updateDisplay",value:function(){return X.isActive(this.__select)?this:(this.__select.value=this.getValue(),D(t.prototype.__proto__||Object.getPrototypeOf(t.prototype),"updateDisplay",this).call(this))}}]),t}(),J=function(e){function t(e,n){function o(){r.setValue(r.__input.value)}F(this,t);var i=V(this,(t.__proto__||Object.getPrototypeOf(t)).call(this,e,n)),r=i;return i.__input=document.createElement("input"),i.__input.setAttribute("type","text"),X.bind(i.__input,"keyup",o),X.bind(i.__input,"change",o),X.bind(i.__input,"blur",function(){r.__onFinishChange&&r.__onFinishChange.call(r,r.getValue())}),X.bind(i.__input,"keydown",function(e){13===e.keyCode&&this.blur()}),i.updateDisplay(),i.domElement.appendChild(i.__input),i}return j(t,z),P(t,[{key:"updateDisplay",value:function(){return X.isActive(this.__input)||(this.__input.value=this.getValue()),D(t.prototype.__proto__||Object.getPrototypeOf(t.prototype),"updateDisplay",this).call(this)}}]),t}(),W=function(e){function t(e,n,o){F(this,t);var i=V(this,(t.__proto__||Object.getPrototypeOf(t)).call(this,e,n)),s=o||{};return i.__min=s.min,i.__max=s.max,i.__step=s.step,S.isUndefined(i.__step)?0===i.initialValue?i.__impliedStep=1:i.__impliedStep=Math.pow(10,Math.floor(Math.log(Math.abs(i.initialValue))/Math.LN10))/10:i.__impliedStep=i.__step,i.__precision=r(i.__impliedStep),i}return j(t,z),P(t,[{key:"setValue",value:function(e){var n=e;return void 0!==this.__min&&n<this.__min?n=this.__min:void 0!==this.__max&&n>this.__max&&(n=this.__max),void 0!==this.__step&&n%this.__step!=0&&(n=Math.round(n/this.__step)*this.__step),D(t.prototype.__proto__||Object.getPrototypeOf(t.prototype),"setValue",this).call(this,n)}},{key:"min",value:function(e){return this.__min=e,this}},{key:"max",value:function(e){return this.__max=e,this}},{key:"step",value:function(e){return this.__step=e,this.__impliedStep=e,this.__precision=r(e),this}}]),t}(),Q=function(e){function t(e,n,o){function i(){l.__onFinishChange&&l.__onFinishChange.call(l,l.getValue())}function r(e){var t=d-e.clientY;l.setValue(l.getValue()+t*l.__impliedStep),d=e.clientY}function s(){X.unbind(window,"mousemove",r),X.unbind(window,"mouseup",s),i()}F(this,t);var a=V(this,(t.__proto__||Object.getPrototypeOf(t)).call(this,e,n,o));a.__truncationSuspended=!1;var l=a,d=void 0;return a.__input=document.createElement("input"),a.__input.setAttribute("type","text"),X.bind(a.__input,"change",function(){var e=parseFloat(l.__input.value);S.isNaN(e)||l.setValue(e)}),X.bind(a.__input,"blur",function(){i()}),X.bind(a.__input,"mousedown",function(e){X.bind(window,"mousemove",r),X.bind(window,"mouseup",s),d=e.clientY}),X.bind(a.__input,"keydown",function(e){13===e.keyCode&&(l.__truncationSuspended=!0,this.blur(),l.__truncationSuspended=!1,i())}),a.updateDisplay(),a.domElement.appendChild(a.__input),a}return j(t,W),P(t,[{key:"updateDisplay",value:function(){return this.__input.value=this.__truncationSuspended?this.getValue():s(this.getValue(),this.__precision),D(t.prototype.__proto__||Object.getPrototypeOf(t.prototype),"updateDisplay",this).call(this)}}]),t}(),q=function(e){function t(e,n,o,i,r){function s(e){e.preventDefault();var t=_.__background.getBoundingClientRect();return _.setValue(a(e.clientX,t.left,t.right,_.__min,_.__max)),!1}function l(){X.unbind(window,"mousemove",s),X.unbind(window,"mouseup",l),_.__onFinishChange&&_.__onFinishChange.call(_,_.getValue())}function d(e){var t=e.touches[0].clientX,n=_.__background.getBoundingClientRect();_.setValue(a(t,n.left,n.right,_.__min,_.__max))}function c(){X.unbind(window,"touchmove",d),X.unbind(window,"touchend",c),_.__onFinishChange&&_.__onFinishChange.call(_,_.getValue())}F(this,t);var u=V(this,(t.__proto__||Object.getPrototypeOf(t)).call(this,e,n,{min:o,max:i,step:r})),_=u;return u.__background=document.createElement("div"),u.__foreground=document.createElement("div"),X.bind(u.__background,"mousedown",function(e){document.activeElement.blur(),X.bind(window,"mousemove",s),X.bind(window,"mouseup",l),s(e)}),X.bind(u.__background,"touchstart",function(e){1===e.touches.length&&(X.bind(window,"touchmove",d),X.bind(window,"touchend",c),d(e))}),X.addClass(u.__background,"slider"),X.addClass(u.__foreground,"slider-fg"),u.updateDisplay(),u.__background.appendChild(u.__foreground),u.domElement.appendChild(u.__background),u}return j(t,W),P(t,[{key:"updateDisplay",value:function(){var e=(this.getValue()-this.__min)/(this.__max-this.__min);return this.__foreground.style.width=100*e+"%",D(t.prototype.__proto__||Object.getPrototypeOf(t.prototype),"updateDisplay",this).call(this)}}]),t}(),Z=function(e){function t(e,n,o){F(this,t);var i=V(this,(t.__proto__||Object.getPrototypeOf(t)).call(this,e,n)),r=i;return i.__button=document.createElement("div"),i.__button.innerHTML=void 0===o?"Fire":o,X.bind(i.__button,"click",function(e){return e.preventDefault(),r.fire(),!1}),X.addClass(i.__button,"button"),i.domElement.appendChild(i.__button),i}return j(t,z),P(t,[{key:"fire",value:function(){this.__onChange&&this.__onChange.call(this),this.getValue().call(this.object),this.__onFinishChange&&this.__onFinishChange.call(this,this.getValue())}}]),t}(),$=function(e){function t(e,n){function o(e){u(e),X.bind(window,"mousemove",u),X.bind(window,"touchmove",u),X.bind(window,"mouseup",r),X.bind(window,"touchend",r)}function i(e){_(e),X.bind(window,"mousemove",_),X.bind(window,"touchmove",_),X.bind(window,"mouseup",s),X.bind(window,"touchend",s)}function r(){X.unbind(window,"mousemove",u),X.unbind(window,"touchmove",u),X.unbind(window,"mouseup",r),X.unbind(window,"touchend",r),c()}function s(){X.unbind(window,"mousemove",_),X.unbind(window,"touchmove",_),X.unbind(window,"mouseup",s),X.unbind(window,"touchend",s),c()}function a(){var e=R(this.value);!1!==e?(p.__color.__state=e,p.setValue(p.__color.toOriginal())):this.value=p.__color.toString()}function c(){p.__onFinishChange&&p.__onFinishChange.call(p,p.__color.toOriginal())}function u(e){-1===e.type.indexOf("touch")&&e.preventDefault();var t=p.__saturation_field.getBoundingClientRect(),n=e.touches&&e.touches[0]||e,o=n.clientX,i=n.clientY,r=(o-t.left)/(t.right-t.left),s=1-(i-t.top)/(t.bottom-t.top);return s>1?s=1:s<0&&(s=0),r>1?r=1:r<0&&(r=0),p.__color.v=s,p.__color.s=r,p.setValue(p.__color.toOriginal()),!1}function _(e){-1===e.type.indexOf("touch")&&e.preventDefault();var t=p.__hue_field.getBoundingClientRect(),n=1-((e.touches&&e.touches[0]||e).clientY-t.top)/(t.bottom-t.top);return n>1?n=1:n<0&&(n=0),p.__color.h=360*n,p.setValue(p.__color.toOriginal()),!1}F(this,t);var h=V(this,(t.__proto__||Object.getPrototypeOf(t)).call(this,e,n));h.__color=new I(h.getValue()),h.__temp=new I(0);var p=h;h.domElement=document.createElement("div"),X.makeSelectable(h.domElement,!1),h.__selector=document.createElement("div"),h.__selector.className="selector",h.__saturation_field=document.createElement("div"),h.__saturation_field.className="saturation-field",h.__field_knob=document.createElement("div"),h.__field_knob.className="field-knob",h.__field_knob_border="2px solid ",h.__hue_knob=document.createElement("div"),h.__hue_knob.className="hue-knob",h.__hue_field=document.createElement("div"),h.__hue_field.className="hue-field",h.__input=document.createElement("input"),h.__input.type="text",h.__input_textShadow="0 1px 1px ",X.bind(h.__input,"keydown",function(e){13===e.keyCode&&a.call(this)}),X.bind(h.__input,"blur",a),X.bind(h.__selector,"mousedown",function(){X.addClass(this,"drag").bind(window,"mouseup",function(){X.removeClass(p.__selector,"drag")})}),X.bind(h.__selector,"touchstart",function(){X.addClass(this,"drag").bind(window,"touchend",function(){X.removeClass(p.__selector,"drag")})});var f=document.createElement("div");return S.extend(h.__selector.style,{width:"122px",height:"102px",padding:"3px",backgroundColor:"#222",boxShadow:"0px 1px 3px rgba(0,0,0,0.3)"}),S.extend(h.__field_knob.style,{position:"absolute",width:"12px",height:"12px",border:h.__field_knob_border+(h.__color.v<.5?"#fff":"#000"),boxShadow:"0px 1px 3px rgba(0,0,0,0.5)",borderRadius:"12px",zIndex:1}),S.extend(h.__hue_knob.style,{position:"absolute",width:"15px",height:"2px",borderRight:"4px solid #fff",zIndex:1}),S.extend(h.__saturation_field.style,{width:"100px",height:"100px",border:"1px solid #555",marginRight:"3px",display:"inline-block",cursor:"pointer"}),S.extend(f.style,{width:"100%",height:"100%",background:"none"}),l(f,"top","rgba(0,0,0,0)","#000"),S.extend(h.__hue_field.style,{width:"15px",height:"100px",border:"1px solid #555",cursor:"ns-resize",position:"absolute",top:"3px",right:"3px"}),d(h.__hue_field),S.extend(h.__input.style,{outline:"none",textAlign:"center",color:"#fff",border:0,fontWeight:"bold",textShadow:h.__input_textShadow+"rgba(0,0,0,0.7)"}),X.bind(h.__saturation_field,"mousedown",o),X.bind(h.__saturation_field,"touchstart",o),X.bind(h.__field_knob,"mousedown",o),X.bind(h.__field_knob,"touchstart",o),X.bind(h.__hue_field,"mousedown",i),X.bind(h.__hue_field,"touchstart",i),h.__saturation_field.appendChild(f),h.__selector.appendChild(h.__field_knob),h.__selector.appendChild(h.__saturation_field),h.__selector.appendChild(h.__hue_field),h.__hue_field.appendChild(h.__hue_knob),h.domElement.appendChild(h.__input),h.domElement.appendChild(h.__selector),h.updateDisplay(),h}return j(t,z),P(t,[{key:"updateDisplay",value:function(){var e=R(this.getValue());if(!1!==e){var t=!1;S.each(I.COMPONENTS,function(n){if(!S.isUndefined(e[n])&&!S.isUndefined(this.__color.__state[n])&&e[n]!==this.__color.__state[n])return t=!0,{}},this),t&&S.extend(this.__color.__state,e)}S.extend(this.__temp.__state,this.__color.__state),this.__temp.a=1;var n=this.__color.v<.5||this.__color.s>.5?255:0,o=255-n;S.extend(this.__field_knob.style,{marginLeft:100*this.__color.s-7+"px",marginTop:100*(1-this.__color.v)-7+"px",backgroundColor:this.__temp.toHexString(),border:this.__field_knob_border+"rgb("+n+","+n+","+n+")"}),this.__hue_knob.style.marginTop=100*(1-this.__color.h/360)+"px",this.__temp.s=1,this.__temp.v=1,l(this.__saturation_field,"left","#fff",this.__temp.toHexString()),this.__input.value=this.__color.toString(),S.extend(this.__input.style,{backgroundColor:this.__color.toHexString(),color:"rgb("+n+","+n+","+n+")",textShadow:this.__input_textShadow+"rgba("+o+","+o+","+o+",.7)"})}}]),t}(),ee=["-moz-","-o-","-webkit-","-ms-",""],te={load:function(e,t){var n=t||document,o=n.createElement("link");o.type="text/css",o.rel="stylesheet",o.href=e,n.getElementsByTagName("head")[0].appendChild(o)},inject:function(e,t){var n=t||document,o=document.createElement("style");o.type="text/css",o.innerHTML=e;var i=n.getElementsByTagName("head")[0];try{i.appendChild(o)}catch(e){}}},ne=function(e,t){var n=e[t];return S.isArray(arguments[2])||S.isObject(arguments[2])?new Y(e,t,arguments[2]):S.isNumber(n)?S.isNumber(arguments[2])&&S.isNumber(arguments[3])?S.isNumber(arguments[4])?new q(e,t,arguments[2],arguments[3],arguments[4]):new q(e,t,arguments[2],arguments[3]):S.isNumber(arguments[4])?new Q(e,t,{min:arguments[2],max:arguments[3],step:arguments[4]}):new Q(e,t,{min:arguments[2],max:arguments[3]}):S.isString(n)?new J(e,t):S.isFunction(n)?new Z(e,t,""):S.isBoolean(n)?new K(e,t):null},oe=window.requestAnimationFrame||window.webkitRequestAnimationFrame||window.mozRequestAnimationFrame||window.oRequestAnimationFrame||window.msRequestAnimationFrame||function(e){setTimeout(e,1e3/60)},ie=function(){function e(){F(this,e),this.backgroundElement=document.createElement("div"),S.extend(this.backgroundElement.style,{backgroundColor:"rgba(0,0,0,0.8)",top:0,left:0,display:"none",zIndex:"1000",opacity:0,WebkitTransition:"opacity 0.2s linear",transition:"opacity 0.2s linear"}),X.makeFullscreen(this.backgroundElement),this.backgroundElement.style.position="fixed",this.domElement=document.createElement("div"),S.extend(this.domElement.style,{position:"fixed",display:"none",zIndex:"1001",opacity:0,WebkitTransition:"-webkit-transform 0.2s ease-out, opacity 0.2s linear",transition:"transform 0.2s ease-out, opacity 0.2s linear"}),document.body.appendChild(this.backgroundElement),document.body.appendChild(this.domElement);var t=this;X.bind(this.backgroundElement,"click",function(){t.hide()})}return P(e,[{key:"show",value:function(){var e=this;this.backgroundElement.style.display="block",this.domElement.style.display="block",this.domElement.style.opacity=0,this.domElement.style.webkitTransform="scale(1.1)",this.layout(),S.defer(function(){e.backgroundElement.style.opacity=1,e.domElement.style.opacity=1,e.domElement.style.webkitTransform="scale(1)"})}},{key:"hide",value:function(){var e=this,t=function t(){e.domElement.style.display="none",e.backgroundElement.style.display="none",X.unbind(e.domElement,"webkitTransitionEnd",t),X.unbind(e.domElement,"transitionend",t),X.unbind(e.domElement,"oTransitionEnd",t)};X.bind(this.domElement,"webkitTransitionEnd",t),X.bind(this.domElement,"transitionend",t),X.bind(this.domElement,"oTransitionEnd",t),this.backgroundElement.style.opacity=0,this.domElement.style.opacity=0,this.domElement.style.webkitTransform="scale(1.1)"}},{key:"layout",value:function(){this.domElement.style.left=window.innerWidth/2-X.getWidth(this.domElement)/2+"px",this.domElement.style.top=window.innerHeight/2-X.getHeight(this.domElement)/2+"px"}}]),e}(),re=function(e){if(e&&"undefined"!=typeof window){var t=document.createElement("style");return t.setAttribute("type","text/css"),t.innerHTML=e,document.head.appendChild(t),e}}(".dg ul{list-style:none;margin:0;padding:0;width:100%;clear:both}.dg.ac{position:fixed;top:0;left:0;right:0;height:0;z-index:0}.dg:not(.ac) .main{overflow:hidden}.dg.main{-webkit-transition:opacity .1s linear;-o-transition:opacity .1s linear;-moz-transition:opacity .1s linear;transition:opacity .1s linear}.dg.main.taller-than-window{overflow-y:auto}.dg.main.taller-than-window .close-button{opacity:1;margin-top:-1px;border-top:1px solid #2c2c2c}.dg.main ul.closed .close-button{opacity:1 !important}.dg.main:hover .close-button,.dg.main .close-button.drag{opacity:1}.dg.main .close-button{-webkit-transition:opacity .1s linear;-o-transition:opacity .1s linear;-moz-transition:opacity .1s linear;transition:opacity .1s linear;border:0;line-height:19px;height:20px;cursor:pointer;text-align:center;background-color:#000}.dg.main .close-button.close-top{position:relative}.dg.main .close-button.close-bottom{position:absolute}.dg.main .close-button:hover{background-color:#111}.dg.a{float:right;margin-right:15px;overflow-y:visible}.dg.a.has-save>ul.close-top{margin-top:0}.dg.a.has-save>ul.close-bottom{margin-top:27px}.dg.a.has-save>ul.closed{margin-top:0}.dg.a .save-row{top:0;z-index:1002}.dg.a .save-row.close-top{position:relative}.dg.a .save-row.close-bottom{position:fixed}.dg li{-webkit-transition:height .1s ease-out;-o-transition:height .1s ease-out;-moz-transition:height .1s ease-out;transition:height .1s ease-out;-webkit-transition:overflow .1s linear;-o-transition:overflow .1s linear;-moz-transition:overflow .1s linear;transition:overflow .1s linear}.dg li:not(.folder){cursor:auto;height:27px;line-height:27px;padding:0 4px 0 5px}.dg li.folder{padding:0;border-left:4px solid rgba(0,0,0,0)}.dg li.title{cursor:pointer;margin-left:-4px}.dg .closed li:not(.title),.dg .closed ul li,.dg .closed ul li>*{height:0;overflow:hidden;border:0}.dg .cr{clear:both;padding-left:3px;height:27px;overflow:hidden}.dg .property-name{cursor:default;float:left;clear:left;width:40%;overflow:hidden;text-overflow:ellipsis}.dg .cr.function .property-name{width:100%}.dg .c{float:left;width:60%;position:relative}.dg .c input[type=text]{border:0;margin-top:4px;padding:3px;width:100%;float:right}.dg .has-slider input[type=text]{width:30%;margin-left:0}.dg .slider{float:left;width:66%;margin-left:-5px;margin-right:0;height:19px;margin-top:4px}.dg .slider-fg{height:100%}.dg .c input[type=checkbox]{margin-top:7px}.dg .c select{margin-top:5px}.dg .cr.function,.dg .cr.function .property-name,.dg .cr.function *,.dg .cr.boolean,.dg .cr.boolean *{cursor:pointer}.dg .cr.color{overflow:visible}.dg .selector{display:none;position:absolute;margin-left:-9px;margin-top:23px;z-index:10}.dg .c:hover .selector,.dg .selector.drag{display:block}.dg li.save-row{padding:0}.dg li.save-row .button{display:inline-block;padding:0px 6px}.dg.dialogue{background-color:#222;width:460px;padding:15px;font-size:13px;line-height:15px}#dg-new-constructor{padding:10px;color:#222;font-family:Monaco, monospace;font-size:10px;border:0;resize:none;box-shadow:inset 1px 1px 1px #888;word-wrap:break-word;margin:12px 0;display:block;width:440px;overflow-y:scroll;height:100px;position:relative}#dg-local-explain{display:none;font-size:11px;line-height:17px;border-radius:3px;background-color:#333;padding:8px;margin-top:10px}#dg-local-explain code{font-size:10px}#dat-gui-save-locally{display:none}.dg{color:#eee;font:11px 'Lucida Grande', sans-serif;text-shadow:0 -1px 0 #111}.dg.main::-webkit-scrollbar{width:5px;background:#1a1a1a}.dg.main::-webkit-scrollbar-corner{height:0;display:none}.dg.main::-webkit-scrollbar-thumb{border-radius:5px;background:#676767}.dg li:not(.folder){background:#1a1a1a;border-bottom:1px solid #2c2c2c}.dg li.save-row{line-height:25px;background:#dad5cb;border:0}.dg li.save-row select{margin-left:5px;width:108px}.dg li.save-row .button{margin-left:5px;margin-top:1px;border-radius:2px;font-size:9px;line-height:7px;padding:4px 4px 5px 4px;background:#c5bdad;color:#fff;text-shadow:0 1px 0 #b0a58f;box-shadow:0 -1px 0 #b0a58f;cursor:pointer}.dg li.save-row .button.gears{background:#c5bdad url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAsAAAANCAYAAAB/9ZQ7AAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAQJJREFUeNpiYKAU/P//PwGIC/ApCABiBSAW+I8AClAcgKxQ4T9hoMAEUrxx2QSGN6+egDX+/vWT4e7N82AMYoPAx/evwWoYoSYbACX2s7KxCxzcsezDh3evFoDEBYTEEqycggWAzA9AuUSQQgeYPa9fPv6/YWm/Acx5IPb7ty/fw+QZblw67vDs8R0YHyQhgObx+yAJkBqmG5dPPDh1aPOGR/eugW0G4vlIoTIfyFcA+QekhhHJhPdQxbiAIguMBTQZrPD7108M6roWYDFQiIAAv6Aow/1bFwXgis+f2LUAynwoIaNcz8XNx3Dl7MEJUDGQpx9gtQ8YCueB+D26OECAAQDadt7e46D42QAAAABJRU5ErkJggg==) 2px 1px no-repeat;height:7px;width:8px}.dg li.save-row .button:hover{background-color:#bab19e;box-shadow:0 -1px 0 #b0a58f}.dg li.folder{border-bottom:0}.dg li.title{padding-left:16px;background:#000 url(data:image/gif;base64,R0lGODlhBQAFAJEAAP////Pz8////////yH5BAEAAAIALAAAAAAFAAUAAAIIlI+hKgFxoCgAOw==) 6px 10px no-repeat;cursor:pointer;border-bottom:1px solid rgba(255,255,255,0.2)}.dg .closed li.title{background-image:url(data:image/gif;base64,R0lGODlhBQAFAJEAAP////Pz8////////yH5BAEAAAIALAAAAAAFAAUAAAIIlGIWqMCbWAEAOw==)}.dg .cr.boolean{border-left:3px solid #806787}.dg .cr.color{border-left:3px solid}.dg .cr.function{border-left:3px solid #e61d5f}.dg .cr.number{border-left:3px solid #2FA1D6}.dg .cr.number input[type=text]{color:#2FA1D6}.dg .cr.string{border-left:3px solid #1ed36f}.dg .cr.string input[type=text]{color:#1ed36f}.dg .cr.function:hover,.dg .cr.boolean:hover{background:#111}.dg .c input[type=text]{background:#303030;outline:none}.dg .c input[type=text]:hover{background:#3c3c3c}.dg .c input[type=text]:focus{background:#494949;color:#fff}.dg .c .slider{background:#303030;cursor:ew-resize}.dg .c .slider-fg{background:#2FA1D6;max-width:100%}.dg .c .slider:hover{background:#3c3c3c}.dg .c .slider:hover .slider-fg{background:#44abda}\n");te.inject(re);var se="Default",ae=function(){try{return!!window.localStorage}catch(e){return!1}}(),le=void 0,de=!0,ce=void 0,ue=!1,_e=[],he=function e(t){var n=this,o=t||{};this.domElement=document.createElement("div"),this.__ul=document.createElement("ul"),this.domElement.appendChild(this.__ul),X.addClass(this.domElement,"dg"),this.__folders={},this.__controllers=[],this.__rememberedObjects=[],this.__rememberedObjectIndecesToControllers=[],this.__listening=[],o=S.defaults(o,{closeOnTop:!1,autoPlace:!0,width:e.DEFAULT_WIDTH}),o=S.defaults(o,{resizable:o.autoPlace,hideable:o.autoPlace}),S.isUndefined(o.load)?o.load={preset:se}:o.preset&&(o.load.preset=o.preset),S.isUndefined(o.parent)&&o.hideable&&_e.push(this),o.resizable=S.isUndefined(o.parent)&&o.resizable,o.autoPlace&&S.isUndefined(o.scrollable)&&(o.scrollable=!0);var i=ae&&"true"===localStorage.getItem(m(this,"isLocal")),r=void 0,s=void 0;if(Object.defineProperties(this,{parent:{get:function(){return o.parent}},scrollable:{get:function(){return o.scrollable}},autoPlace:{get:function(){return o.autoPlace}},closeOnTop:{get:function(){return o.closeOnTop}},preset:{get:function(){return n.parent?n.getRoot().preset:o.load.preset},set:function(e){n.parent?n.getRoot().preset=e:o.load.preset=e,E(this),n.revert()}},width:{get:function(){return o.width},set:function(e){o.width=e,w(n,e)}},name:{get:function(){return o.name},set:function(e){o.name=e,s&&(s.innerHTML=o.name)}},closed:{get:function(){return o.closed},set:function(t){o.closed=t,o.closed?X.addClass(n.__ul,e.CLASS_CLOSED):X.removeClass(n.__ul,e.CLASS_CLOSED),this.onResize(),n.__closeButton&&(n.__closeButton.innerHTML=t?e.TEXT_OPEN:e.TEXT_CLOSED)}},load:{get:function(){return o.load}},useLocalStorage:{get:function(){return i},set:function(e){ae&&(i=e,e?X.bind(window,"unload",r):X.unbind(window,"unload",r),localStorage.setItem(m(n,"isLocal"),e))}}}),S.isUndefined(o.parent)){if(this.closed=o.closed||!1,X.addClass(this.domElement,e.CLASS_MAIN),X.makeSelectable(this.domElement,!1),ae&&i){n.useLocalStorage=!0;var a=localStorage.getItem(m(this,"gui"));a&&(o.load=JSON.parse(a))}this.__closeButton=document.createElement("div"),this.__closeButton.innerHTML=e.TEXT_CLOSED,X.addClass(this.__closeButton,e.CLASS_CLOSE_BUTTON),o.closeOnTop?(X.addClass(this.__closeButton,e.CLASS_CLOSE_TOP),this.domElement.insertBefore(this.__closeButton,this.domElement.childNodes[0])):(X.addClass(this.__closeButton,e.CLASS_CLOSE_BOTTOM),this.domElement.appendChild(this.__closeButton)),X.bind(this.__closeButton,"click",function(){n.closed=!n.closed})}else{void 0===o.closed&&(o.closed=!0);var l=document.createTextNode(o.name);X.addClass(l,"controller-name"),s=c(n,l);X.addClass(this.__ul,e.CLASS_CLOSED),X.addClass(s,"title"),X.bind(s,"click",function(e){return e.preventDefault(),n.closed=!n.closed,!1}),o.closed||(this.closed=!1)}o.autoPlace&&(S.isUndefined(o.parent)&&(de&&(ce=document.createElement("div"),X.addClass(ce,"dg"),X.addClass(ce,e.CLASS_AUTO_PLACE_CONTAINER),document.body.appendChild(ce),de=!1),ce.appendChild(this.domElement),X.addClass(this.domElement,e.CLASS_AUTO_PLACE)),this.parent||w(n,o.width)),this.__resizeHandler=function(){n.onResizeDebounced()},X.bind(window,"resize",this.__resizeHandler),X.bind(this.__ul,"webkitTransitionEnd",this.__resizeHandler),X.bind(this.__ul,"transitionend",this.__resizeHandler),X.bind(this.__ul,"oTransitionEnd",this.__resizeHandler),this.onResize(),o.resizable&&y(this),r=function(){ae&&"true"===localStorage.getItem(m(n,"isLocal"))&&localStorage.setItem(m(n,"gui"),JSON.stringify(n.getSaveObject()))},this.saveToLocalStorageIfPossible=r,o.parent||function(){var e=n.getRoot();e.width+=1,S.defer(function(){e.width-=1})}()};he.toggleHide=function(){ue=!ue,S.each(_e,function(e){e.domElement.style.display=ue?"none":""})},he.CLASS_AUTO_PLACE="a",he.CLASS_AUTO_PLACE_CONTAINER="ac",he.CLASS_MAIN="main",he.CLASS_CONTROLLER_ROW="cr",he.CLASS_TOO_TALL="taller-than-window",he.CLASS_CLOSED="closed",he.CLASS_CLOSE_BUTTON="close-button",he.CLASS_CLOSE_TOP="close-top",he.CLASS_CLOSE_BOTTOM="close-bottom",he.CLASS_DRAG="drag",he.DEFAULT_WIDTH=245,he.TEXT_CLOSED="Close Controls",he.TEXT_OPEN="Open Controls",he._keydownHandler=function(e){"text"===document.activeElement.type||72!==e.which&&72!==e.keyCode||he.toggleHide()},X.bind(window,"keydown",he._keydownHandler,!1),S.extend(he.prototype,{add:function(e,t){return f(this,e,t,{factoryArgs:Array.prototype.slice.call(arguments,2)})},addColor:function(e,t){return f(this,e,t,{color:!0})},remove:function(e){this.__ul.removeChild(e.__li),this.__controllers.splice(this.__controllers.indexOf(e),1);var t=this;S.defer(function(){t.onResize()})},destroy:function(){if(this.parent)throw new Error("Only the root GUI should be removed with .destroy(). For subfolders, use gui.removeFolder(folder) instead.");this.autoPlace&&ce.removeChild(this.domElement);var e=this;S.each(this.__folders,function(t){e.removeFolder(t)}),X.unbind(window,"keydown",he._keydownHandler,!1),u(this)},addFolder:function(e){if(void 0!==this.__folders[e])throw new Error('You already have a folder in this GUI by the name "'+e+'"');var t={name:e,parent:this};t.autoPlace=this.autoPlace,this.load&&this.load.folders&&this.load.folders[e]&&(t.closed=this.load.folders[e].closed,t.load=this.load.folders[e]);var n=new he(t);this.__folders[e]=n;var o=c(this,n.domElement);return X.addClass(o,"folder"),n},removeFolder:function(e){this.__ul.removeChild(e.domElement.parentElement),delete this.__folders[e.name],this.load&&this.load.folders&&this.load.folders[e.name]&&delete this.load.folders[e.name],u(e);var t=this;S.each(e.__folders,function(t){e.removeFolder(t)}),S.defer(function(){t.onResize()})},open:function(){this.closed=!1},close:function(){this.closed=!0},hide:function(){this.domElement.style.display="none"},show:function(){this.domElement.style.display=""},onResize:function(){var e=this.getRoot();if(e.scrollable){var t=X.getOffset(e.__ul).top,n=0;S.each(e.__ul.childNodes,function(t){e.autoPlace&&t===e.__save_row||(n+=X.getHeight(t))}),window.innerHeight-t-20<n?(X.addClass(e.domElement,he.CLASS_TOO_TALL),e.__ul.style.height=window.innerHeight-t-20+"px"):(X.removeClass(e.domElement,he.CLASS_TOO_TALL),e.__ul.style.height="auto")}e.__resize_handle&&S.defer(function(){e.__resize_handle.style.height=e.__ul.offsetHeight+"px"}),e.__closeButton&&(e.__closeButton.style.width=e.width+"px")},onResizeDebounced:S.debounce(function(){this.onResize()},50),remember:function(){if(S.isUndefined(le)&&((le=new ie).domElement.innerHTML='<div id="dg-save" class="dg dialogue">\n\n  Here\'s the new load parameter for your <code>GUI</code>\'s constructor:\n\n  <textarea id="dg-new-constructor"></textarea>\n\n  <div id="dg-save-locally">\n\n    <input id="dg-local-storage" type="checkbox"/> Automatically save\n    values to <code>localStorage</code> on exit.\n\n    <div id="dg-local-explain">The values saved to <code>localStorage</code> will\n      override those passed to <code>dat.GUI</code>\'s constructor. This makes it\n      easier to work incrementally, but <code>localStorage</code> is fragile,\n      and your friends may not see the same values you do.\n\n    </div>\n\n  </div>\n\n</div>'),this.parent)throw new Error("You can only call remember on a top level GUI.");var e=this;S.each(Array.prototype.slice.call(arguments),function(t){0===e.__rememberedObjects.length&&v(e),-1===e.__rememberedObjects.indexOf(t)&&e.__rememberedObjects.push(t)}),this.autoPlace&&w(this,this.width)},getRoot:function(){for(var e=this;e.parent;)e=e.parent;return e},getSaveObject:function(){var e=this.load;return e.closed=this.closed,this.__rememberedObjects.length>0&&(e.preset=this.preset,e.remembered||(e.remembered={}),e.remembered[this.preset]=x(this)),e.folders={},S.each(this.__folders,function(t,n){e.folders[n]=t.getSaveObject()}),e},save:function(){this.load.remembered||(this.load.remembered={}),this.load.remembered[this.preset]=x(this),_(this,!1),this.saveToLocalStorageIfPossible()},saveAs:function(e){this.load.remembered||(this.load.remembered={},this.load.remembered[se]=x(this,!0)),this.load.remembered[e]=x(this),this.preset=e,g(this,e,!0),this.saveToLocalStorageIfPossible()},revert:function(e){S.each(this.__controllers,function(t){this.getRoot().load.remembered?p(e||this.getRoot(),t):t.setValue(t.initialValue),t.__onFinishChange&&t.__onFinishChange.call(t,t.getValue())},this),S.each(this.__folders,function(e){e.revert(e)}),e||_(this.getRoot(),!1)},listen:function(e){var t=0===this.__listening.length;this.__listening.push(e),t&&C(this.__listening)},updateDisplay:function(){S.each(this.__controllers,function(e){e.updateDisplay()}),S.each(this.__folders,function(e){e.updateDisplay()})}});var pe={Color:I,math:N,interpret:R},fe={Controller:z,BooleanController:K,OptionController:Y,StringController:J,NumberController:W,NumberControllerBox:Q,NumberControllerSlider:q,FunctionController:Z,ColorController:$},me={dom:X},ge={GUI:he},be=he,ve={color:pe,controllers:fe,dom:me,gui:ge,GUI:be};e.color=pe,e.controllers=fe,e.dom=me,e.gui=ge,e.GUI=be,e.default=ve,Object.defineProperty(e,"__esModule",{value:!0})});
